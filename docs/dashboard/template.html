@@ -1,0 +1,552 @@
+<title>{{TITLE}}</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@500;600;700&family=Source+Sans+3:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a show-control desk. A console strip on top (title, summary meters), then a
+   two-column rack of panels. Progress reads as LED meter segments; milestone ids are
+   keycaps, like the tile hotkeys in the app. Light theme is a printed cue sheet. */
+:root {
+  --bg: #e9ecf0;
+  --panel: #f8f9fb;
+  --fg: #151a21;
+  --muted: #5b6573;
+  --line: #ccd3dc;
+  --line-strong: #8e99a8;
+  --accent: #1f6fc4;          /* the app's accent blue, deepened for paper */
+  --accent-soft: rgba(31, 111, 196, 0.10);
+  --done: #2c8a45;
+  --review: #7a4fc4;
+  --progress: #1f6fc4;
+  --blocked: #c23b3b;
+  --todo: #8b95a2;
+  --warn: #b07a0c;
+  --cap-bg: #ffffff;
+  --cap-edge: #b9c2cd;
+  --chip-fg: #ffffff;
+  --display: "Saira Condensed", "Arial Narrow", "Roboto Condensed", sans-serif;
+  --body: "Source Sans 3", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1013; --panel: #16191e; --fg: #e3e8ee; --muted: #8b95a3; --line: #262b33; --line-strong: #414955;
+    --accent: #4ca3ff; --accent-soft: rgba(76, 163, 255, 0.12);
+    --done: #4fc46a; --review: #a98af0; --progress: #4ca3ff; --blocked: #ff6b6b; --todo: #6c7684; --warn: #f0b443;
+    --cap-bg: #1f242b; --cap-edge: #39414c; --chip-fg: #0e1013;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1013; --panel: #16191e; --fg: #e3e8ee; --muted: #8b95a3; --line: #262b33; --line-strong: #414955;
+  --accent: #4ca3ff; --accent-soft: rgba(76, 163, 255, 0.12);
+  --done: #4fc46a; --review: #a98af0; --progress: #4ca3ff; --blocked: #ff6b6b; --todo: #6c7684; --warn: #f0b443;
+  --cap-bg: #1f242b; --cap-edge: #39414c; --chip-fg: #0e1013;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font: 15px/1.5 var(--body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 16px 48px;
+}
+.wrap { max-width: 1320px; margin: 0 auto; display: grid; gap: 16px; }
+h1, h2, h3 { font-family: var(--display); font-weight: 600; text-wrap: balance; margin: 0; }
+h2 { font-size: 19px; text-transform: uppercase; letter-spacing: 0.08em; }
+h3 { font-size: 15px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.mono, code { font-family: var(--mono); font-size: 12.5px; }
+.muted { color: var(--muted); }
+.num { font-variant-numeric: tabular-nums; }
+a { color: var(--accent); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Keycap, as on the app's tiles */
+.cap {
+  display: inline-grid; place-items: center; min-width: 34px; height: 30px; padding: 0 6px;
+  font-family: var(--mono); font-weight: 500; font-size: 13px;
+  background: var(--cap-bg); border: 1px solid var(--cap-edge); border-bottom-width: 3px; border-radius: 5px;
+}
+
+/* Console strip */
+.console { background: var(--panel); border: 1px solid var(--line-strong); border-radius: 8px; display: grid; grid-template-columns: minmax(0, 2.2fr) repeat(4, minmax(0, 1fr)); overflow: hidden; }
+.console > div { padding: 12px 16px; border-left: 1px solid var(--line); min-width: 0; }
+.console > div:first-child { border-left: 0; display: flex; gap: 14px; align-items: center; }
+.label { font-family: var(--display); font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.12em; color: var(--muted); }
+.value { font-family: var(--mono); font-size: 14px; font-variant-numeric: tabular-nums; overflow-wrap: break-word; }
+.name { font-family: var(--display); font-size: 36px; line-height: 1; font-weight: 700; letter-spacing: 0.04em; }
+.sub { color: var(--muted); font-size: 14px; margin-top: 4px; }
+.glyph { display: grid; grid-template-columns: repeat(3, 13px); gap: 3px; flex: none; }
+.glyph i { height: 11px; border-radius: 2px; }
+.live { display: inline-flex; align-items: center; gap: 6px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--todo); flex: none; }
+.dot.on { background: var(--done); box-shadow: 0 0 6px var(--done); }
+.dot.off { background: var(--blocked); }
+@media (max-width: 900px) {
+  .console { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .console > div:first-child { grid-column: 1 / -1; }
+  .console > div { border-left: 0; border-top: 1px solid var(--line); }
+  .console > div:nth-child(2n+1):not(:first-child) { border-left: 1px solid var(--line); }
+  .console > div:first-child { border-top: 0; }
+}
+
+.banner { border: 1px solid var(--warn); border-radius: 8px; background: var(--panel); padding: 10px 14px; }
+
+/* Summary meters */
+.summary { display: grid; grid-template-columns: minmax(0, 2fr) repeat(4, minmax(0, 1fr)); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.summary > div { padding: 10px 16px; border-left: 1px solid var(--line); min-width: 0; }
+.summary > div:first-child { border-left: 0; }
+.big { font-family: var(--display); font-size: 34px; font-weight: 600; line-height: 1.05; font-variant-numeric: tabular-nums; }
+@media (max-width: 700px) { .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } .summary > div { border-left: 0; border-top: 1px solid var(--line); } .summary > div:first-child { grid-column: 1 / -1; border-top: 0; } }
+
+/* LED meter: segmented bar. The fill colour comes from --c. */
+.meter { --c: var(--progress); position: relative; height: 10px; flex: 1; min-width: 60px; }
+.meter::before, .meter > i {
+  content: ""; position: absolute; inset: 0 auto 0 0; border-radius: 1px;
+  -webkit-mask: repeating-linear-gradient(90deg, #000 0 7px, transparent 7px 9px);
+  mask: repeating-linear-gradient(90deg, #000 0 7px, transparent 7px 9px);
+}
+.meter::before { right: 0; background: var(--line); }
+.meter > i { background: var(--c); }
+.meter.big-m { height: 14px; margin-top: 8px; }
+.m-done { --c: var(--done); } .m-review { --c: var(--review); } .m-blocked { --c: var(--blocked); } .m-todo { --c: var(--todo); }
+
+nav.jump { display: flex; flex-wrap: wrap; gap: 6px; }
+nav.jump a { font-family: var(--display); text-transform: uppercase; letter-spacing: 0.1em; font-size: 13.5px; text-decoration: none; color: var(--muted); border: 1px solid var(--line); border-radius: 5px; background: var(--panel); padding: 3px 11px; }
+nav.jump a:hover { color: var(--accent); border-color: var(--accent); }
+
+/* Rack of panels */
+.rack { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+.span2 { grid-column: 1 / -1; }
+@media (max-width: 900px) { .rack { grid-template-columns: minmax(0, 1fr); } }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; min-width: 0; }
+.panel > header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+.panel > header .meta { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.panel .body { padding: 12px 16px; display: grid; gap: 10px; min-width: 0; }
+.empty { color: var(--muted); font-size: 14px; padding: 8px 0; }
+.empty code { color: var(--fg); }
+
+/* Status chip */
+.chip { display: inline-block; font-family: var(--display); font-weight: 600; font-size: 12.5px; letter-spacing: 0.08em; text-transform: uppercase; padding: 1px 8px; border-radius: 4px; color: var(--chip-fg); background: var(--todo); white-space: nowrap; }
+.s-done { background: var(--done); } .s-review { background: var(--review); } .s-in_progress, .s-claimed, .s-active { background: var(--progress); }
+.s-blocked, .s-open { background: var(--blocked); } .s-todo, .s-idle, .s-resolved, .s-finished { background: var(--todo); }
+
+/* Milestones */
+.ms { display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; gap: 4px 12px; align-items: center; padding: 9px 0; border-top: 1px solid var(--line); }
+.ms:first-child { border-top: 0; }
+.ms-title { font-weight: 600; font-size: 15.5px; }
+.ms-sum { grid-column: 2 / -1; color: var(--muted); font-size: 14px; }
+.ms-bar { grid-column: 2 / -1; display: flex; align-items: center; gap: 10px; }
+.ms-meta { grid-column: 2 / -1; font-family: var(--mono); font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 14px; }
+
+/* Dependency graph */
+.graph-wrap { overflow-x: auto; }
+.graph-wrap svg { display: block; min-width: 760px; width: 100%; max-width: 1200px; height: auto; margin: 0 auto; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+
+/* Tables */
+.tbl-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+th { font-family: var(--display); font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; font-size: 12.5px; color: var(--muted); text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line-strong); white-space: nowrap; }
+td { padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+td.mono { white-space: nowrap; }
+.filters { display: flex; flex-wrap: wrap; gap: 6px; }
+.filters button { font: 500 13px var(--body); background: var(--panel); color: var(--muted); border: 1px solid var(--line); border-radius: 5px; padding: 3px 10px; cursor: pointer; }
+.filters button[aria-pressed="true"] { color: var(--fg); border-color: var(--accent); background: var(--accent-soft); }
+
+/* Agents */
+.agents { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); gap: 10px; }
+.agent { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; display: grid; gap: 4px; min-width: 0; }
+.agent .top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.agent .nm { font-weight: 600; overflow-wrap: anywhere; }
+.agent dl { margin: 0; display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 2px 8px; font-size: 13.5px; }
+.agent dt { color: var(--muted); font-family: var(--display); text-transform: uppercase; letter-spacing: 0.06em; font-size: 12.5px; padding-top: 1px; }
+.agent dd { margin: 0; overflow-wrap: anywhere; }
+.stale { color: var(--warn); }
+
+/* Blockers */
+.blocker { border-left: 3px solid var(--blocked); padding: 6px 10px; display: grid; gap: 2px; }
+.blocker.resolved { border-left-color: var(--todo); opacity: 0.75; }
+.blocker .t { font-weight: 600; }
+.blocker .d { font-size: 14px; color: var(--muted); }
+
+/* Decisions */
+details.dec { border-top: 1px solid var(--line); padding: 8px 0; }
+details.dec:first-child { border-top: 0; }
+details.dec summary { cursor: pointer; display: grid; grid-template-columns: 74px minmax(0, 1fr) auto; gap: 10px; align-items: baseline; list-style: none; }
+details.dec summary::-webkit-details-marker { display: none; }
+details.dec summary .q { font-weight: 600; }
+details.dec .why { margin: 6px 0 0 84px; font-size: 14px; display: grid; gap: 4px; max-width: 75ch; }
+details.dec .why b { font-family: var(--display); text-transform: uppercase; letter-spacing: 0.06em; font-size: 12.5px; color: var(--muted); font-weight: 600; margin-right: 6px; }
+@media (max-width: 600px) { details.dec summary { grid-template-columns: minmax(0, 1fr); gap: 2px; } details.dec .why { margin-left: 0; } }
+
+/* History */
+.day { font-family: var(--display); text-transform: uppercase; letter-spacing: 0.08em; font-size: 13.5px; color: var(--muted); padding: 4px 0; border-bottom: 1px solid var(--line-strong); }
+.ev { display: grid; grid-template-columns: 52px 14px minmax(0, 1fr); gap: 0 10px; padding: 5px 0; }
+.ev .tm { font-family: var(--mono); font-size: 12px; color: var(--muted); padding-top: 2px; }
+.ev .mk { position: relative; }
+.ev .mk::before { content: ""; position: absolute; left: 6px; top: 0; bottom: -10px; width: 1px; background: var(--line); }
+.ev .mk::after { content: ""; position: absolute; left: 2px; top: 6px; width: 9px; height: 9px; border-radius: 2px; background: var(--panel); border: 2px solid var(--accent); }
+.ev.k-commit .mk::after { background: var(--accent); }
+.ev.k-blocked .mk::after { border-color: var(--blocked); background: var(--blocked); }
+.ev.k-decision .mk::after { border-color: var(--review); transform: rotate(45deg); }
+.ev.k-merge .mk::after { border-color: var(--done); background: var(--done); }
+.ev .tx { font-size: 14px; min-width: 0; overflow-wrap: anywhere; }
+.ev .who { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.history { max-height: 640px; overflow-y: auto; padding-right: 4px; }
+
+/* Metrics */
+.metric-row { display: grid; grid-template-columns: 80px minmax(0, 1fr) 36px; gap: 10px; align-items: center; font-size: 14px; }
+.metric-row .v { font-family: var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+.plat td.yes { color: var(--done); } .plat td.partial { color: var(--progress); } .plat td.untested { color: var(--warn); } .plat td.no { color: var(--todo); } .plat td.blocked { color: var(--blocked); }
+
+.schema { font-size: 13.5px; display: grid; gap: 8px; }
+.schema code { overflow-wrap: anywhere; }
+@media (prefers-reduced-motion: no-preference) { .meter > i { transition: width .4s ease; } }
+</style>
+
+<div class="wrap">
+  <section class="console" aria-label="Project">
+    <div>
+      <div class="glyph" aria-hidden="true">
+        <i style="background:#c23b3b"></i><i style="background:#c8621c"></i><i style="background:#3a933a"></i>
+        <i style="background:#2f69cf"></i><i style="background:#7b4ac2"></i><i style="background:#148087"></i>
+      </div>
+      <div>
+        <div class="name">{{NAME_HTML}}</div>
+        <div class="sub">{{SUBTITLE_HTML}}</div>
+      </div>
+    </div>
+    <div><div class="label">Started</div><div class="value">{{STARTED}}</div></div>
+    <div><div class="label">Repo</div><div class="value">{{REPO_HTML}}</div></div>
+    <div><div class="label">Last change</div><div class="value" id="lastChange">—</div></div>
+    <div><div class="label">Board data</div><div class="value live"><span class="dot" id="liveDot"></span><span id="liveText">connecting</span></div></div>
+  </section>
+
+  <div class="banner" id="dbBanner" hidden>{{OFFLINE_HTML}}</div>
+
+  <section class="summary" aria-label="Summary">
+    <div>
+      <div class="label">Overall progress</div>
+      <div class="big" id="sumOverall">—</div>
+      <div class="meter big-m"><i id="sumOverallBar" style="width:0"></i></div>
+    </div>
+    <div><div class="label">Milestones done</div><div class="big" id="sumMs">—</div></div>
+    <div><div class="label">Tests passing</div><div class="big" id="sumTests">—</div></div>
+    <div><div class="label">Open blockers</div><div class="big" id="sumBlk">—</div></div>
+    <div><div class="label">Agents working</div><div class="big" id="sumAgents">—</div></div>
+  </section>
+
+  <nav class="jump" aria-label="Sections">
+    <a href="#deps">Dependencies</a><a href="#milestones">Milestones</a><a href="#agents">Agents</a><a href="#blockers">Blockers</a><a href="#metrics">Metrics</a><a href="#tasks">Tasks</a><a href="#decisions">Decisions</a><a href="#history">History</a><a href="#schema">Schema</a>
+  </nav>
+
+  <div class="rack">
+    <section class="panel span2" id="deps">
+      <header><h2>Dependencies</h2><span class="meta">arrow = must land first</span></header>
+      <div class="body">
+        <div class="graph-wrap" id="depGraph"><div class="empty">The graph is drawn from each milestone's <code>depends_on</code> once milestones exist.</div></div>
+        <div class="legend">
+          <span><i style="background:var(--done)"></i>done</span>
+          <span><i style="background:var(--review)"></i>review (on a branch)</span>
+          <span><i style="background:var(--progress)"></i>in progress</span>
+          <span><i style="background:var(--blocked)"></i>blocked</span>
+          <span><i style="background:var(--todo)"></i>todo</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="milestones">
+      <header><h2>Milestones</h2><span class="meta" id="msMeta"></span></header>
+      <div class="body" id="msList"><div class="empty">Milestones appear here once rows exist in <code>milestones</code>.</div></div>
+    </section>
+
+    <section class="panel" id="agents">
+      <header><h2>Agents</h2><span class="meta" id="agMeta"></span></header>
+      <div class="body"><div class="agents" id="agList"><div class="empty">No agent has registered yet. Each session writes one row to <code>agents</code> when it starts.</div></div></div>
+    </section>
+
+    <section class="panel" id="blockers">
+      <header><h2>Blockers &amp; open questions</h2><span class="meta" id="blkMeta"></span></header>
+      <div class="body" id="blkList"><div class="empty">Nothing blocked. Raise one with a row in <code>blockers</code>.</div></div>
+    </section>
+
+    <section class="panel" id="metrics">
+      <header><h2>Metrics</h2><span class="meta" id="metMeta"></span></header>
+      <div class="body">
+        <h3>Tests per module</h3>
+        <div id="metTests" style="display:grid;gap:7px"><div class="empty">Test counts come from <code>metrics</code> rows with <code>kind: "tests"</code>.</div></div>
+        <h3 style="margin-top:8px">Platforms</h3>
+        <div class="tbl-wrap"><table class="plat"><thead><tr><th>Platform</th><th>Build</th><th>Tests</th><th>Runs</th><th>Audio out</th><th>Checked on</th></tr></thead><tbody id="metPlat"><tr><td colspan="6" class="empty">Platform rows use <code>kind: "platform"</code>.</td></tr></tbody></table></div>
+      </div>
+    </section>
+
+    <section class="panel span2" id="tasks">
+      <header><h2>Tasks</h2><div class="filters" id="taskFilters" role="group" aria-label="Filter tasks by status"></div></header>
+      <div class="body"><div class="tbl-wrap"><table><thead><tr><th>MS</th><th>Task</th><th>Status</th><th>Owner</th><th>Branch</th><th>Updated</th></tr></thead><tbody id="taskRows"><tr><td colspan="6" class="empty">Tasks appear here once rows exist in <code>tasks</code>.</td></tr></tbody></table></div></div>
+    </section>
+
+    <section class="panel" id="decisions">
+      <header><h2>Decisions</h2><span class="meta" id="decMeta"></span></header>
+      <div class="body" id="decList"><div class="empty">Every decision is recorded in <code>decisions</code> with its reasoning.</div></div>
+    </section>
+
+    <section class="panel" id="history">
+      <header><h2>History</h2><span class="meta" id="evMeta"></span></header>
+      <div class="body history" id="evList"><div class="empty">The append-only log in <code>events</code> shows here, newest first.</div></div>
+    </section>
+
+    <section class="panel span2" id="schema">
+      <header><h2>Collection schema</h2><span class="meta">agents write with ArtifactData; {{PROTOCOL_NOTE}}</span></header>
+      <div class="body schema">
+        <div><code>milestones/{M0..}</code> id, order, title, status (todo · in_progress · review · blocked · done), owner, progress 0–100, depends_on [ids], summary, branch, updated</div>
+        <div><code>tasks/{t-…}</code> id, milestone, title, status (todo · claimed · in_progress · blocked · review · done), owner, branch, notes, updated</div>
+        <div><code>decisions/{D-NNN}</code> id, date, decision, reasoning, alternatives, decided_by, milestone</div>
+        <div><code>events/{ts-agent}</code> ts (UTC ISO), agent, kind (start · claim · commit · merge · decision · blocked · finish · note), text, commit, milestone. Append only.</div>
+        <div><code>agents/{session-name}</code> name, session_id, role, current_task, branch, worktree, status (active · idle · blocked · finished), last_seen (UTC ISO)</div>
+        <div><code>blockers/{B-NNN}</code> id, title, detail, status (open · resolved), milestone, needs, raised_by, raised, resolved, resolution</div>
+        <div><code>metrics/{id}</code> kind "tests": module, tests, branch, note, updated · kind "platform": order, platform, build, tests, runs, audio (yes · partial · untested · no · blocked), where, updated</div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<script>
+(function () {
+  const state = { milestones: [], tasks: [], decisions: [], events: [], agents: [], blockers: [], metrics: [] };
+  let taskFilter = "active";
+  try { taskFilter = localStorage.getItem("sb-taskFilter") || "active"; } catch (e) {}
+
+  const $ = (id) => document.getElementById(id);
+  const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const slug = (s) => String(s || "todo").toLowerCase().replace(/[^a-z_]/g, "_");
+  const chip = (s) => `<span class="chip s-${slug(s)}">${esc(String(s || "todo").replace("_", " "))}</span>`;
+  const t = (v) => { const d = Date.parse(v); return isNaN(d) ? 0 : d; };
+  const fmtTime = (v) => { const d = t(v); if (!d) return esc(v || ""); return new Date(d).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }); };
+  const ago = (v) => { const d = t(v); if (!d) return ""; const m = Math.round((Date.now() - d) / 60000); if (m < 1) return "just now"; if (m < 60) return m + " min ago"; const h = Math.round(m / 60); if (h < 48) return h + " h ago"; return Math.round(h / 24) + " d ago"; };
+  const msOrder = (m) => (typeof m.order === "number" ? m.order : parseInt(String(m.id || "").replace(/\D/g, ""), 10) || 99);
+  const meter = (p, status) => `<div class="meter m-${slug(status)}"><i style="width:${p}%"></i></div>`;
+
+  function renderSummary() {
+    const ms = state.milestones;
+    if (ms.length) {
+      const avg = Math.round(ms.reduce((a, m) => a + (Number(m.progress) || 0), 0) / ms.length);
+      $("sumOverall").textContent = avg + "%";
+      $("sumOverallBar").style.width = avg + "%";
+      $("sumMs").textContent = ms.filter((m) => m.status === "done").length + " / " + ms.length;
+    }
+    const tests = state.metrics.filter((m) => m.kind === "tests").reduce((a, m) => a + (Number(m.tests) || 0), 0);
+    if (state.metrics.length) $("sumTests").textContent = tests;
+    $("sumBlk").textContent = state.blockers.filter((b) => b.status !== "resolved").length;
+    $("sumAgents").textContent = state.agents.filter((a) => a.status === "active" || a.status === "blocked").length + " / " + state.agents.length;
+    const stamps = [].concat(state.events.map((e) => e.ts), state.agents.map((a) => a.last_seen), state.tasks.map((x) => x.updated), state.milestones.map((x) => x.updated)).map(t).filter(Boolean);
+    if (stamps.length) $("lastChange").textContent = ago(new Date(Math.max.apply(null, stamps)).toISOString());
+  }
+
+  function renderMilestones() {
+    const ms = state.milestones.slice().sort((a, b) => msOrder(a) - msOrder(b));
+    if (!ms.length) return;
+    $("msMeta").textContent = ms.length + " milestones";
+    $("msList").innerHTML = ms.map((m) => {
+      const p = Math.max(0, Math.min(100, Number(m.progress) || 0));
+      const dep = (m.depends_on || []).length ? "needs " + m.depends_on.join(", ") : "no dependencies";
+      const open = state.tasks.filter((x) => x.milestone === m.id && x.status !== "done").length;
+      return `<div class="ms">
+        <span class="cap">${esc(m.id)}</span>
+        <div class="ms-title">${esc(m.title)}</div>
+        <div>${chip(m.status)}</div>
+        <div class="ms-bar">${meter(p, m.status)}<span class="mono num">${p}%</span></div>
+        ${m.summary ? `<div class="ms-sum">${esc(m.summary)}</div>` : ""}
+        <div class="ms-meta"><span>owner ${esc(m.owner || "unassigned")}</span>${m.branch ? `<span>branch ${esc(m.branch)}</span>` : ""}<span>${esc(dep)}</span><span>${open} open task${open === 1 ? "" : "s"}</span></div>
+      </div>`;
+    }).join("");
+  }
+
+  function renderDeps() {
+    const ms = state.milestones.slice().sort((a, b) => msOrder(a) - msOrder(b));
+    if (!ms.length) return;
+    const byId = {}; ms.forEach((m) => (byId[m.id] = m));
+    const depth = {};
+    const getDepth = (id, seen) => {
+      if (depth[id] != null) return depth[id];
+      if (seen[id]) return 0;
+      seen[id] = 1;
+      const deps = ((byId[id] || {}).depends_on || []).filter((d) => byId[d]);
+      depth[id] = deps.length ? 1 + Math.max.apply(null, deps.map((d) => getDepth(d, seen))) : 0;
+      return depth[id];
+    };
+    ms.forEach((m) => getDepth(m.id, {}));
+    const cols = {}; ms.forEach((m) => (cols[depth[m.id]] = cols[depth[m.id]] || []).push(m));
+    const ncol = Object.keys(cols).length, maxRow = Math.max.apply(null, Object.values(cols).map((c) => c.length));
+    const NW = 140, NH = 48, CG = 48, RG = 14, PAD = 8;
+    const W = PAD * 2 + ncol * NW + (ncol - 1) * CG, H = PAD * 2 + maxRow * NH + (maxRow - 1) * RG;
+    const pos = {};
+    Object.keys(cols).forEach((c) => {
+      const list = cols[c], colH = list.length * NH + (list.length - 1) * RG, y0 = PAD + (H - PAD * 2 - colH) / 2;
+      list.forEach((m, i) => (pos[m.id] = { x: PAD + Number(c) * (NW + CG), y: y0 + i * (NH + RG) }));
+    });
+    const color = (s) => ({ done: "var(--done)", review: "var(--review)", in_progress: "var(--progress)", blocked: "var(--blocked)" }[s] || "var(--todo)");
+    let edges = "", nodes = "";
+    ms.forEach((m) => (m.depends_on || []).forEach((d) => {
+      if (!pos[d]) return;
+      const a = pos[d], b = pos[m.id];
+      const x1 = a.x + NW, y1 = a.y + NH / 2, x2 = b.x - 6, y2 = b.y + NH / 2, mx = (x1 + x2) / 2;
+      const hot = byId[d].status === "blocked" || (byId[d].status !== "done" && byId[d].status !== "review");
+      edges += `<path d="M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}" fill="none" stroke="${hot ? color(byId[d].status) : "var(--line-strong)"}" stroke-width="${hot ? 1.8 : 1.2}" ${byId[d].status === "blocked" ? 'stroke-dasharray="4 3"' : ""} marker-end="url(#arr)"/>`;
+    }));
+    ms.forEach((m) => {
+      const p = pos[m.id], pr = Math.max(0, Math.min(100, Number(m.progress) || 0));
+      const title = String(m.title || "").length > 19 ? String(m.title).slice(0, 18) + "…" : String(m.title || "");
+      const segs = Math.round((pr / 100) * 12);
+      let leds = "";
+      for (let i = 0; i < 12; i++) leds += `<rect x="${p.x + 8 + i * 10.3}" y="${p.y + NH - 9}" width="8" height="4" rx="1" fill="${i < segs ? color(m.status) : "var(--line)"}"/>`;
+      nodes += `<g><title>${esc(m.id + " " + m.title + " · " + m.status + " · " + pr + "%")}</title>
+        <rect x="${p.x}" y="${p.y}" width="${NW}" height="${NH}" rx="6" fill="var(--panel)" stroke="${color(m.status)}" stroke-width="1.6"/>
+        <text x="${p.x + 8}" y="${p.y + 18}" fill="var(--fg)" font-family="JetBrains Mono, monospace" font-weight="500" font-size="12.5">${esc(m.id)}</text>
+        <text x="${p.x + 44}" y="${p.y + 18}" fill="${color(m.status)}" font-family="Saira Condensed, Arial Narrow, sans-serif" font-weight="600" font-size="12" letter-spacing="0.5">${esc(String(m.status || "").replace("_", " ").toUpperCase())}</text>
+        <text x="${p.x + 8}" y="${p.y + 33}" fill="var(--muted)" font-family="Source Sans 3, sans-serif" font-size="12">${esc(title)}</text>
+        ${leds}
+      </g>`;
+    });
+    $("depGraph").innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Milestone dependency graph">
+      <defs><marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="var(--line-strong)"/></marker></defs>
+      ${edges}${nodes}</svg>`;
+  }
+
+  function renderAgents() {
+    const ag = state.agents.slice().sort((a, b) => t(b.last_seen) - t(a.last_seen));
+    if (!ag.length) return;
+    $("agMeta").textContent = ag.length + " registered";
+    $("agList").innerHTML = ag.map((a) => {
+      const staleMin = (Date.now() - t(a.last_seen)) / 60000;
+      const stale = a.status === "active" && t(a.last_seen) && staleMin > 120;
+      return `<div class="agent">
+        <div class="top"><span class="nm">${esc(a.name)}</span>${chip(a.status)}</div>
+        <div class="muted" style="font-size:13.5px">${esc(a.role || "")}</div>
+        <dl>
+          <dt>Task</dt><dd>${esc(a.current_task || "—")}</dd>
+          <dt>Branch</dt><dd class="mono">${esc(a.branch || "—")}</dd>
+          ${a.worktree ? `<dt>Path</dt><dd class="mono">${esc(a.worktree)}</dd>` : ""}
+          <dt>Session</dt><dd class="mono">${esc(a.session_id || "—")}</dd>
+          <dt>Seen</dt><dd class="${stale ? "stale" : ""}">${esc(ago(a.last_seen) || "—")}${stale ? " (stale?)" : ""}</dd>
+        </dl>
+      </div>`;
+    }).join("");
+  }
+
+  function renderBlockers() {
+    const bl = state.blockers.slice().sort((a, b) => (a.status === "resolved") - (b.status === "resolved") || String(a.id).localeCompare(String(b.id)));
+    if (!bl.length) { $("blkList").innerHTML = '<div class="empty">Nothing blocked. Raise one with a row in <code>blockers</code>.</div>'; $("blkMeta").textContent = ""; return; }
+    const open = bl.filter((b) => b.status !== "resolved").length;
+    $("blkMeta").textContent = open + " open · " + (bl.length - open) + " resolved";
+    $("blkList").innerHTML = bl.map((b) => `<div class="blocker ${b.status === "resolved" ? "resolved" : ""}">
+      <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap"><span class="mono muted">${esc(b.id)}</span><span class="t">${esc(b.title)}</span>${chip(b.status || "open")}</div>
+      ${b.detail ? `<div class="d">${esc(b.detail)}</div>` : ""}
+      <div class="d mono">${b.milestone ? esc(b.milestone) + " · " : ""}${b.needs ? "needs " + esc(b.needs) + " · " : ""}raised by ${esc(b.raised_by || "?")}${b.raised ? " " + esc(fmtTime(b.raised)) : ""}${b.resolution ? " · " + esc(b.resolution) : ""}</div>
+    </div>`).join("");
+  }
+
+  const FILTERS = [["active", "Open"], ["all", "All"], ["in_progress", "In progress"], ["claimed", "Claimed"], ["blocked", "Blocked"], ["review", "Review"], ["todo", "Todo"], ["done", "Done"]];
+  function renderTaskFilters() {
+    $("taskFilters").innerHTML = FILTERS.map(([k, l]) => {
+      const n = k === "all" ? state.tasks.length : k === "active" ? state.tasks.filter((x) => x.status !== "done").length : state.tasks.filter((x) => x.status === k).length;
+      return `<button type="button" id="tf-${k}" data-k="${k}" aria-pressed="${taskFilter === k}">${l} <span class="num">${n}</span></button>`;
+    }).join("");
+  }
+  function renderTasks() {
+    renderTaskFilters();
+    if (!state.tasks.length) return;
+    const rank = { blocked: 0, in_progress: 1, claimed: 2, review: 3, todo: 4, done: 5 };
+    const rows = state.tasks.filter((x) => taskFilter === "all" || (taskFilter === "active" ? x.status !== "done" : x.status === taskFilter))
+      .sort((a, b) => String(a.milestone).localeCompare(String(b.milestone), undefined, { numeric: true }) || (rank[a.status] ?? 9) - (rank[b.status] ?? 9));
+    $("taskRows").innerHTML = rows.length ? rows.map((x) => `<tr>
+      <td class="mono">${esc(x.milestone)}</td>
+      <td>${esc(x.title)}${x.notes ? `<div class="muted" style="font-size:13px">${esc(x.notes)}</div>` : ""}</td>
+      <td>${chip(x.status)}</td>
+      <td class="mono">${esc(x.owner || "—")}</td>
+      <td class="mono">${esc(x.branch || "—")}</td>
+      <td class="mono muted">${esc(ago(x.updated))}</td></tr>`).join("") : '<tr><td colspan="6" class="empty">No tasks match this filter.</td></tr>';
+  }
+
+  function renderDecisions() {
+    const ds = state.decisions.slice().sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.id).localeCompare(String(a.id), undefined, { numeric: true }));
+    if (!ds.length) return;
+    $("decMeta").textContent = ds.length + " recorded";
+    $("decList").innerHTML = ds.map((d) => `<details class="dec">
+      <summary><span class="mono muted">${esc(d.id)}</span><span class="q">${esc(d.decision)}</span><span class="mono muted">${esc(d.decided_by || "")}</span></summary>
+      <div class="why">
+        ${d.reasoning ? `<div><b>Why</b>${esc(d.reasoning)}</div>` : ""}
+        ${d.alternatives ? `<div><b>Rejected</b>${esc(d.alternatives)}</div>` : ""}
+        <div class="mono muted">${esc(d.date || "")}${d.milestone ? " · " + esc(d.milestone) : ""}</div>
+      </div></details>`).join("");
+  }
+
+  function renderEvents() {
+    const ev = state.events.slice().sort((a, b) => t(b.ts) - t(a.ts));
+    if (!ev.length) return;
+    $("evMeta").textContent = ev.length + " events";
+    let html = "", day = "";
+    ev.forEach((e) => {
+      const d = t(e.ts) ? new Date(t(e.ts)) : null;
+      const dk = d ? d.toLocaleDateString([], { weekday: "short", year: "numeric", month: "short", day: "numeric" }) : "Undated";
+      if (dk !== day) { html += `<div class="day">${esc(dk)}</div>`; day = dk; }
+      html += `<div class="ev k-${slug(e.kind)}">
+        <div class="tm">${d ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""}</div><div class="mk"></div>
+        <div class="tx">${esc(e.text)}<div class="who">${esc(e.agent || "?")} · ${esc(e.kind || "note")}${e.milestone ? " · " + esc(e.milestone) : ""}${e.commit ? " · " + esc(e.commit) : ""}</div></div>
+      </div>`;
+    });
+    $("evList").innerHTML = html;
+  }
+
+  function renderMetrics() {
+    const tests = state.metrics.filter((m) => m.kind === "tests").sort((a, b) => (Number(b.tests) || 0) - (Number(a.tests) || 0));
+    const plats = state.metrics.filter((m) => m.kind === "platform").sort((a, b) => (a.order ?? 99) - (b.order ?? 99));
+    if (tests.length) {
+      const max = Math.max.apply(null, tests.map((m) => Number(m.tests) || 0)) || 1;
+      $("metMeta").textContent = tests.reduce((a, m) => a + (Number(m.tests) || 0), 0) + " tests";
+      $("metTests").innerHTML = tests.map((m) => `<div class="metric-row" title="${esc((m.branch || "") + " " + (m.note || ""))}">
+        <span class="mono">${esc(m.module)}</span>
+        ${meter(((Number(m.tests) || 0) / max) * 100, m.branch && m.branch !== "main" ? "review" : "in_progress")}
+        <span class="v">${esc(m.tests)}</span></div>`).join("") + '<div class="legend"><span><i style="background:var(--progress)"></i>on main</span><span><i style="background:var(--review)"></i>on a branch, not merged</span></div>';
+    }
+    if (plats.length) {
+      const cell = (v) => `<td class="${slug(v || "no")}">${esc(v || "no")}</td>`;
+      $("metPlat").innerHTML = plats.map((p) => `<tr><td>${esc(p.platform)}</td>${cell(p.build)}${cell(p.tests)}${cell(p.runs)}${cell(p.audio)}<td class="mono muted">${esc(p.where || "")}</td></tr>`).join("");
+    }
+  }
+
+  const RENDER = { milestones: [renderMilestones, renderDeps], tasks: [renderTasks, renderMilestones], decisions: [renderDecisions], events: [renderEvents], agents: [renderAgents], blockers: [renderBlockers], metrics: [renderMetrics] };
+
+  $("taskFilters").addEventListener("click", (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    taskFilter = b.dataset.k;
+    try { localStorage.setItem("sb-taskFilter", taskFilter); } catch (err) {}
+    renderTasks();
+  });
+  renderTaskFilters();
+
+  function setLive(ok, text) { $("liveDot").className = "dot " + (ok ? "on" : "off"); $("liveText").textContent = text; }
+
+  async function start() {
+    const db = window.claude && window.claude.use ? await window.claude.use("db") : null;
+    if (!db) { $("dbBanner").hidden = false; setLive(false, "offline"); return; }
+    setLive(true, "live");
+    Object.keys(RENDER).forEach((name) => {
+      let q = db.collection(name);
+      if (name === "events") q = q.orderBy("ts", "desc").limit(600);
+      q.onSnapshot((snap) => {
+        state[name] = snap.docs.map((d) => Object.assign({ _id: d.id }, d.data()));
+        RENDER[name].forEach((f) => f());
+        renderSummary();
+      }, (err) => { setLive(false, "disconnected (" + (err && err.code) + ")"); });
+    });
+  }
+  start();
+  setInterval(() => { renderSummary(); renderAgents(); }, 60000);
+})();
+</script>

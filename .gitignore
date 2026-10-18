@@ -1,0 +1,20 @@
+.DS_Store
+/target/
+/result
+*.png
+/dist/
+.claude/settings.local.json
+!docs/design/*.png
+!docs/screenshots/*.png
+# Starter packs (starter/README.md): your own clips never go in git
+/starter/clips/
+/starter/*.csv
+!/starter/clips.example.csv
+/starter/manifest.json
+# A private gift pack: its clips and lists never go in git
+/gift/clips/
+/gift/*.csv
+!/gift/clips.example.csv
+!/gift/clips.template.csv
+/gift/manifest.json
+.claude/worktrees/

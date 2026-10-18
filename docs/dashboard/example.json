@@ -1,0 +1,9 @@
+{
+  "TITLE": "LeadStinger Project Board",
+  "NAME_HTML": "Lead<span style=\"color:var(--accent)\">Stinger</span>",
+  "SUBTITLE_HTML": "A cross-platform live soundboard in Rust. Shared source of truth for the maintainer and every agent.",
+  "STARTED": "2026-10-17",
+  "REPO_HTML": "github.com/<wbr>weckere/<wbr>leadstinger",
+  "OFFLINE_HTML": "Live data needs a claude.ai sign-in. Open this board on claude.ai while signed in.",
+  "PROTOCOL_NOTE": "protocol in docs/dashboard/README.md"
+}

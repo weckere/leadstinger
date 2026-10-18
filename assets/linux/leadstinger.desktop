@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=LeadStinger
+GenericName=Soundboard
+Comment=Fire sound clips live from a grid of tiles or a cue list
+Exec=leadstinger
+Icon=leadstinger
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+Keywords=soundboard;stinger;cue;clips;sound effects;podcast;
+StartupWMClass=leadstinger
+StartupNotify=true

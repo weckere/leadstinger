@@ -1,0 +1,374 @@
+//! A starter pack: on a first launch, import a folder of the user's own clips into named
+//! sets. The app ships no clips; see starter/README.md for how a pack is made.
+//!
+//! The folder is `$LEADSTINGER_STARTER_DIR` (or the older `…_GIFT_DIR`), else
+//! `<data dir>/Starter` (or `Gift`), else one next to the executable
+//! (`../Resources/Starter` in the macOS bundle, `../share/<slug>/starter` in the Nix
+//! package; `Gift`/`gift` there too). Its `manifest.json`, written by
+//! `scripts/clip-pack.py`, names the sets and gives each tile's title, hotkey, colour and
+//! mode; it can also choose the look the app opens in (`"theme": "panel"`). Without a
+//! manifest, each subfolder becomes a set and its audio files become tiles.
+//!
+//! It applies once: only to an empty library, and never again after `Starter.applied`
+//! (or the older `Gift.applied`) is in the data dir.
+
+use std::path::{Component, Path, PathBuf};
+
+use serde::Deserialize;
+use serde_json::Value;
+
+use crate::decode::AUDIO_EXTENSIONS;
+use crate::logic::{first_free_key, normalize_key, set_hotkey};
+use crate::model::{Appearance, PlayMode, SoundSet, ThemeKind, TileColor};
+use crate::store::Store;
+
+/// Written to the data dir once a pack has been imported.
+pub const MARKER: &str = "Starter.applied";
+/// The marker older builds wrote; it counts too.
+const OLD_MARKER: &str = "Gift.applied";
+
+fn applied(data_dir: &Path) -> bool {
+    data_dir.join(MARKER).exists() || data_dir.join(OLD_MARKER).exists()
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Manifest {
+    sets: Vec<PackSet>,
+    /// `console` or `panel`: the look the app opens in.
+    theme: Option<String>,
+    /// `dark`, `light` or `system`.
+    appearance: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct PackSet {
+    name: String,
+    tiles: Vec<PackTile>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct PackTile {
+    /// Relative to the pack folder.
+    file: String,
+    title: Option<String>,
+    /// `None`: the app picks a free key; `Some("")`: no hotkey.
+    hotkey: Option<String>,
+    color: Option<String>,
+    mode: Option<String>,
+    #[serde(rename = "loop")]
+    looping: bool,
+    fade_out: f32,
+    volume: Option<f32>,
+}
+
+/// The folders to look in, in order. `env_dir` (from `LEADSTINGER_STARTER_DIR`) is the only
+/// candidate when it is set.
+fn candidates(env_dir: Option<PathBuf>, data_dir: &Path, exe: Option<&Path>) -> Vec<PathBuf> {
+    if let Some(dir) = env_dir {
+        return vec![dir];
+    }
+    let mut dirs = vec![data_dir.join("Starter"), data_dir.join("Gift")];
+    if let Some(bin) = exe.and_then(Path::parent) {
+        for (bundle, share) in [("Starter", "starter"), ("Gift", "gift")] {
+            dirs.push(bin.join("../Resources").join(bundle));
+            dirs.push(bin.join("../share").join(crate::brand::SLUG).join(share));
+        }
+    }
+    dirs
+}
+
+/// Import the starter pack if this is a first launch and a pack exists. Returns how many
+/// tiles were added, or `None` if nothing was done.
+pub fn preload_if_first_launch(store: &mut Store) -> anyhow::Result<Option<usize>> {
+    if applied(&store.data_dir) || !is_empty(store) {
+        return Ok(None);
+    }
+    let exe = std::env::current_exe().ok();
+    let env_dir = crate::brand::env("STARTER_DIR").or_else(|| crate::brand::env("GIFT_DIR")).map(PathBuf::from);
+    match candidates(env_dir, &store.data_dir, exe.as_deref()).into_iter().find(|d| d.is_dir()) {
+        Some(dir) => preload_from(store, &dir),
+        None => Ok(None),
+    }
+}
+
+fn is_empty(store: &Store) -> bool {
+    store.library.sets.iter().all(|s| s.tiles.is_empty())
+}
+
+/// [`preload_if_first_launch`] with the folder already chosen.
+fn preload_from(store: &mut Store, dir: &Path) -> anyhow::Result<Option<usize>> {
+    let marker = store.data_dir.join(MARKER);
+    if applied(&store.data_dir) || !is_empty(store) {
+        return Ok(None);
+    }
+    let manifest = load_manifest(dir)?;
+    let saved = (std::mem::take(&mut store.library.sets), store.library.selected_set);
+    let mut added = 0;
+    for gs in &manifest.sets {
+        added += import_set(store, dir, gs);
+    }
+    store.library.sets.retain(|s| !s.tiles.is_empty());
+    if added == 0 {
+        // Nothing usable: keep the library as it was, and try again next launch.
+        (store.library.sets, store.library.selected_set) = saved;
+        eprintln!("{}: the starter pack {} has no playable clips", crate::brand::SLUG, dir.display());
+        return Ok(None);
+    }
+    store.library.selected_set = Some(store.library.sets[0].id);
+    if let Some(t) = named::<ThemeKind>(&manifest.theme, "theme", "manifest") {
+        store.library.theme = t;
+    }
+    if let Some(a) = named::<Appearance>(&manifest.appearance, "appearance", "manifest") {
+        store.library.appearance = a;
+    }
+    store.mark_dirty();
+    store.save_now()?;
+    std::fs::write(&marker, format!("{}\n", dir.display()))?;
+    Ok(Some(added))
+}
+
+fn load_manifest(dir: &Path) -> anyhow::Result<Manifest> {
+    let path = dir.join("manifest.json");
+    if path.exists() {
+        let bytes = std::fs::read(&path)?;
+        return serde_json::from_slice(&bytes).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()));
+    }
+    Ok(scan(dir))
+}
+
+/// No manifest: each subfolder is a set (in name order), and loose files go in "Starter".
+fn scan(dir: &Path) -> Manifest {
+    let entries = |d: &Path| -> Vec<PathBuf> {
+        let mut v: Vec<PathBuf> = std::fs::read_dir(d).into_iter().flatten().flatten().map(|e| e.path()).collect();
+        v.sort();
+        v
+    };
+    let is_audio = |p: &Path| {
+        p.is_file()
+            && p.extension().and_then(|e| e.to_str()).is_some_and(|e| AUDIO_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
+    };
+    let tiles = |paths: Vec<PathBuf>| -> Vec<PackTile> {
+        paths
+            .into_iter()
+            .filter(|p| is_audio(p))
+            .filter_map(|p| p.strip_prefix(dir).ok().map(|r| PackTile { file: r.to_string_lossy().into_owned(), ..Default::default() }))
+            .collect()
+    };
+    let top = entries(dir);
+    let mut sets: Vec<PackSet> = top
+        .iter()
+        .filter(|p| p.is_dir())
+        .map(|d| PackSet { name: d.file_name().unwrap_or_default().to_string_lossy().into_owned(), tiles: tiles(entries(d)) })
+        .collect();
+    let loose = tiles(top);
+    if !loose.is_empty() {
+        sets.push(PackSet { name: "Starter".into(), tiles: loose });
+    }
+    Manifest { sets, ..Default::default() }
+}
+
+/// A manifest path that stays inside the pack folder.
+fn inside(dir: &Path, file: &str) -> Option<PathBuf> {
+    let rel = Path::new(file);
+    rel.components().all(|c| matches!(c, Component::Normal(_))).then(|| dir.join(rel))
+}
+
+/// Parse a snake_case enum value, warning (about `whose` value) if it's unknown.
+fn named<T: serde::de::DeserializeOwned>(text: &Option<String>, what: &str, whose: &str) -> Option<T> {
+    let t = text.as_deref()?.trim().to_ascii_lowercase();
+    let v = serde_json::from_value(Value::String(t.clone())).ok();
+    if v.is_none() && !t.is_empty() {
+        eprintln!("{}: starter pack {whose}: unknown {what} {t:?}", crate::brand::SLUG);
+    }
+    v
+}
+
+/// Add one set and its tiles; returns how many tiles were added.
+fn import_set(store: &mut Store, dir: &Path, gs: &PackSet) -> usize {
+    let mut found = Vec::new();
+    for gt in &gs.tiles {
+        match inside(dir, &gt.file) {
+            Some(p) if p.is_file() => found.push((p, gt)),
+            _ => eprintln!("{}: starter pack clip {:?} is missing", crate::brand::SLUG, gt.file),
+        }
+    }
+    let name = if gs.name.trim().is_empty() { "Starter" } else { gs.name.trim() };
+    store.library.sets.push(SoundSet::named(name));
+    let si = store.library.sets.len() - 1;
+    let paths: Vec<PathBuf> = found.iter().map(|(p, _)| p.clone()).collect();
+    let (ids, errors) = store.import(&paths, si, None);
+    for e in errors {
+        eprintln!("{}: starter pack clip: {e}", crate::brand::SLUG);
+    }
+    // `import` reports errors without saying which file failed, so match tiles to
+    // entries by the title it derived (the file stem).
+    let mut entries = found.iter().map(|(p, gt)| (p.file_stem().map(|s| s.to_string_lossy().into_owned()), *gt));
+    let tiles = &mut store.library.sets[si].tiles;
+    let mut keyed = Vec::new();
+    for id in &ids {
+        let Some(t) = tiles.iter_mut().find(|t| t.id == *id) else { continue };
+        let Some((_, gt)) = entries.find(|(stem, _)| stem.as_deref() == Some(t.title.as_str())) else { continue };
+        if let Some(title) = gt.title.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            t.title = title.to_owned();
+        }
+        let whose = format!("tile “{}”", t.title);
+        if let Some(c) = named::<TileColor>(&gt.color, "colour", &whose) {
+            t.color = c;
+        }
+        if let Some(m) = named::<PlayMode>(&gt.mode, "mode", &whose) {
+            t.mode = m;
+        }
+        t.looping = gt.looping;
+        t.fade_out = gt.fade_out.max(0.0);
+        t.volume = gt.volume.unwrap_or(1.0).clamp(0.0, 1.0);
+        match gt.hotkey.as_deref().map(str::trim) {
+            None => {}
+            Some("") => keyed.push((*id, None)),
+            Some(k) => match k.chars().next().filter(|_| k.chars().count() == 1).and_then(normalize_key) {
+                Some(c) => keyed.push((*id, Some(c))),
+                None => eprintln!("{}: starter pack tile “{}”: {k:?} can't be a hotkey", crate::brand::SLUG, t.title),
+            },
+        }
+    }
+    // Hotkeys from the manifest win; tiles that lose their automatic key to one get
+    // the next free key.
+    for (id, key) in &keyed {
+        set_hotkey(tiles, *id, *key);
+    }
+    for i in 0..tiles.len() {
+        if tiles[i].hotkey.is_none() && !keyed.iter().any(|(id, _)| *id == tiles[i].id) {
+            tiles[i].hotkey = first_free_key(tiles);
+        }
+    }
+    ids.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wav;
+    use serde_json::json;
+
+    fn temp_dir() -> PathBuf {
+        let d = std::env::temp_dir().join(format!("sb-starter-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn tone(path: &Path, freq: f32) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        wav::write_tone(path, 8000, 0.2, &[freq], 0.3).unwrap();
+    }
+
+    #[test]
+    fn manifest_pack_fills_an_empty_library_once() {
+        let root = temp_dir();
+        let gift = root.join("Gift");
+        tone(&gift.join("Show/Air Horn.wav"), 440.0);
+        tone(&gift.join("Show/Ding.wav"), 660.0);
+        tone(&gift.join("Show/Room Tone.wav"), 110.0);
+        tone(&gift.join("Music/Rimshot.wav"), 220.0);
+        let manifest = json!({
+            "format": "sttnger-gift", "version": 1, "theme": "PADD",
+            "sets": [
+                {"name": "Show", "tiles": [
+                    {"file": "Show/Air Horn.wav", "title": "Air Horn", "hotkey": "R", "color": "red", "mode": "restart"},
+                    {"file": "Show/Ding.wav", "title": "Ding", "hotkey": "1", "color": "teal", "mode": "hold"},
+                    {"file": "Show/Missing.wav", "title": "Not clipped yet"},
+                    {"file": "../outside.wav"},
+                    {"file": "Show/Room Tone.wav", "color": "Gold", "mode": "toggle", "loop": true, "fade_out": 2.0, "volume": 0.6}
+                ]},
+                {"name": "Music", "tiles": [{"file": "Music/Rimshot.wav", "hotkey": ""}]},
+                {"name": "Empty", "tiles": [{"file": "nope.wav"}]}
+            ]
+        });
+        std::fs::write(gift.join("manifest.json"), manifest.to_string()).unwrap();
+
+        let data = root.join("data");
+        let mut store = Store::open(data.clone()).unwrap();
+        assert_eq!(preload_from(&mut store, &gift).unwrap(), Some(4));
+        let names: Vec<&str> = store.library.sets.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["Show", "Music"], "sets with no clips are dropped");
+        assert_eq!(store.library.selected_set, Some(store.library.sets[0].id));
+
+        let bridge = &store.library.sets[0].tiles;
+        let t: Vec<_> = bridge.iter().map(|t| (t.title.as_str(), t.hotkey, t.color, t.mode)).collect();
+        assert_eq!(
+            t,
+            [
+                ("Air Horn", Some('r'), TileColor::Red, PlayMode::Restart),
+                ("Ding", Some('1'), TileColor::Teal, PlayMode::Hold),
+                // Keeps its automatic key; an unknown colour keeps the automatic one.
+                ("Room Tone", Some('3'), TileColor::nth(2), PlayMode::Toggle),
+            ]
+        );
+        assert!(bridge[2].looping && bridge[2].fade_out == 2.0 && (bridge[2].volume - 0.6).abs() < 1e-6);
+        assert_eq!(store.library.sets[1].tiles[0].hotkey, None, "an empty hotkey means none");
+        assert!(data.join(MARKER).exists());
+        assert_eq!(store.library.theme, ThemeKind::Panel, "the manifest picks the look");
+        assert_eq!(store.library.appearance, Appearance::default(), "no appearance given: unchanged");
+
+        // Saved: a relaunch sees the same library, and the pack isn't applied again.
+        drop(store);
+        let mut store = Store::open(data.clone()).unwrap();
+        assert_eq!(store.library.sets.len(), 2);
+        for s in &mut store.library.sets {
+            s.tiles.clear();
+        }
+        assert_eq!(preload_from(&mut store, &gift).unwrap(), None, "the marker stops a second import");
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn folders_without_a_manifest_become_sets_and_a_full_library_is_left_alone() {
+        let root = temp_dir();
+        let gift = root.join("Gift");
+        tone(&gift.join("Ship Systems/Transporter.wav"), 500.0);
+        tone(&gift.join("Ship Systems/Communicator.wav"), 900.0);
+        tone(&gift.join("Loose.wav"), 300.0);
+        std::fs::write(gift.join("Ship Systems/notes.txt"), "not audio").unwrap();
+
+        let mut store = Store::open(root.join("data")).unwrap();
+        assert_eq!(preload_from(&mut store, &gift).unwrap(), Some(3));
+        let sets: Vec<(&str, Vec<&str>)> =
+            store.library.sets.iter().map(|s| (s.name.as_str(), s.tiles.iter().map(|t| t.title.as_str()).collect())).collect();
+        assert_eq!(sets, [("Ship Systems", vec!["Communicator", "Transporter"]), ("Starter", vec!["Loose"])]);
+        assert_eq!(store.library.theme, ThemeKind::default(), "no manifest: the look is left alone");
+
+        let mut other = Store::open(root.join("other")).unwrap();
+        let src = root.join("Mine.wav");
+        tone(&src, 250.0);
+        other.import(&[src], 0, None);
+        assert_eq!(preload_from(&mut other, &gift).unwrap(), None);
+        assert_eq!(other.library.sets.len(), 1);
+
+        let empty = temp_dir();
+        let mut fresh = Store::open(root.join("fresh")).unwrap();
+        assert_eq!(preload_from(&mut fresh, &empty).unwrap(), None, "an empty folder changes nothing");
+        assert_eq!(fresh.library.sets.len(), 1);
+        assert!(!root.join("fresh").join(MARKER).exists());
+        std::fs::remove_dir_all(root).ok();
+        std::fs::remove_dir_all(empty).ok();
+    }
+
+    #[test]
+    fn search_order() {
+        let data = Path::new("/d");
+        let exe = Path::new("/app/Contents/MacOS/STTNGer");
+        assert_eq!(candidates(Some("/g".into()), data, Some(exe)), [PathBuf::from("/g")]);
+        assert_eq!(
+            candidates(None, data, Some(exe)),
+            [
+                PathBuf::from("/d/Starter"),
+                PathBuf::from("/d/Gift"),
+                PathBuf::from("/app/Contents/MacOS/../Resources/Starter"),
+                PathBuf::from(format!("/app/Contents/MacOS/../share/{}/starter", crate::brand::SLUG)),
+                PathBuf::from("/app/Contents/MacOS/../Resources/Gift"),
+                PathBuf::from(format!("/app/Contents/MacOS/../share/{}/gift", crate::brand::SLUG)),
+            ]
+        );
+    }
+}

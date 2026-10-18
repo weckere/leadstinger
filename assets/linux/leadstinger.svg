@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- LeadStinger app icon: the same six clip tiles theme::app_icon() draws for the window. -->
+  <rect width="64" height="64" rx="12" fill="#1E1E1E"/>
+  <rect x="8" y="14" width="13" height="15" fill="#DE6848"/>
+  <rect x="24" y="14" width="13" height="15" fill="#E6983E"/>
+  <rect x="40" y="14" width="13" height="15" fill="#68BA62"/>
+  <rect x="8" y="32" width="13" height="15" fill="#5684D6"/>
+  <rect x="24" y="32" width="13" height="15" fill="#9662CE"/>
+  <rect x="40" y="32" width="13" height="15" fill="#50BEA8"/>
+</svg>

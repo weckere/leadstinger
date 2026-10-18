@@ -1,0 +1,55 @@
+[package]
+name = "leadstinger"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+description = "LeadStinger, a cross-platform soundboard for live use"
+license = "MIT"
+authors = ["Eric Wecker"]
+repository = "https://github.com/weckere/leadstinger"
+readme = "README.md"
+keywords = ["soundboard", "audio", "podcast", "live", "cue"]
+categories = ["multimedia::audio", "command-line-utilities"]
+exclude = ["/gift", "/dist", "/docs/design/*.figcraft"]
+
+[features]
+# The gift build's branding: ST:TNGer instead of LeadStinger (src/brand.rs, D-036).
+sttnger = []
+
+[dependencies]
+anyhow = "1"
+cpal = "0.15"
+directories = "5"
+eframe = "0.31"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+rfd = "0.15"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+symphonia = { version = "0.5", features = ["all"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+# `leadstinger-cli serve` shuts down cleanly (saving the library) on SIGTERM/SIGINT.
+signal-hook = "0.4"
+
+[profile.release]
+lto = "thin"
+strip = true
+
+# Decoding in debug builds is painfully slow; optimize dependencies even in dev.
+[profile.dev.package."*"]
+opt-level = 2
+
+# Native menu bar on macOS (the same crate and approach PhotoCraft uses). Linux and
+# Windows draw their menu bar inside the window with egui, so no GTK is needed.
+[target.'cfg(target_os = "macos")'.dependencies]
+muda = { version = "=0.21.2", default-features = false }
+# Turn off AppKit's automatic window tabbing (its "Show Tab Bar" items in View).
+# Same versions winit already uses.
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSWindow", "NSPasteboard", "NSPasteboardItem"] }
+# Reading file URLs off the pasteboard (paste to import).
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSEnumerator"] }
+
+# Linux: choose the X11 backend at launch (STTNGER_X11 / the Window system setting).
+# Same winit eframe already uses; only its X11 extension trait is needed here.
+[target.'cfg(target_os = "linux")'.dependencies]
+winit = { version = "0.30", default-features = false, features = ["x11"] }

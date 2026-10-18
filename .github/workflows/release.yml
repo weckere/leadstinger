@@ -1,0 +1,122 @@
+name: Release
+
+# On a version tag: build every download and attach them to a *draft* release, which a
+# maintainer checks and publishes by hand.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: v
+        name: The tag matches Cargo.toml
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME, Cargo.toml $version"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  macos:
+    needs: version
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - name: Universal app
+        run: UNIVERSAL=1 scripts/bundle-macos.sh
+      - name: Zip
+        run: |
+          cd dist
+          ditto -c -k --keepParent LeadStinger.app "LeadStinger-${{ needs.version.outputs.version }}-macos-universal.zip"
+          lipo -info LeadStinger.app/Contents/MacOS/LeadStinger
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/*.zip
+
+  linux:
+    needs: version
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            arch: x86_64
+          - os: ubuntu-22.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Linux libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev libgtk-3-dev \
+            libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev libgl1-mesa-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release
+      - name: Tarball
+        run: |
+          name=leadstinger-${{ needs.version.outputs.version }}-linux-${{ matrix.arch }}
+          mkdir -p "$name/share/applications" "$name/share/icons/hicolor/scalable/apps" dist
+          install -Dm755 target/release/leadstinger target/release/leadstinger-cli -t "$name/bin"
+          cp assets/linux/leadstinger.desktop "$name/share/applications/"
+          cp assets/linux/leadstinger.svg "$name/share/icons/hicolor/scalable/apps/"
+          cp LICENSE README.md ATTRIBUTION.md "$name/"
+          tar -czf "dist/$name.tar.gz" "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.arch }}
+          path: dist/*.tar.gz
+
+  appimage:
+    needs: version
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: x86_64
+          - os: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: cachix/install-nix-action@v31
+      - name: AppImage
+        run: scripts/build-appimage.sh "dist/LeadStinger-${{ needs.version.outputs.version }}-${{ matrix.arch }}.AppImage"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: appimage-${{ matrix.arch }}
+          path: dist/*.AppImage
+
+  release:
+    needs: [version, macos, linux, appimage]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS
+      - name: Release notes
+        run: |
+          version=${{ needs.version.outputs.version }}
+          awk -v v="$version" '$0 ~ "^## \\[" v "\\]" { on = 1; next } /^## \[/ { on = 0 } on' CHANGELOG.md > notes.md
+          cat .github/release-notes.md >> notes.md
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --draft --title "LeadStinger ${{ needs.version.outputs.version }}" --notes-file notes.md
