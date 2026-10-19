@@ -44,6 +44,10 @@ pub enum Effect {
     PickReplacement(Uuid),
     /// `tile.picture` without a path.
     PickPicture(Uuid),
+    /// `set.import` without a path: choose a set file.
+    PickSetFile,
+    /// `set.export` without a path: ask where to save these sets (`None`: every set).
+    SaveSetFile(Option<Uuid>),
     /// `set.create`/`set.rename` without a name: edit it in place.
     StartRename(Uuid),
     Screenshot(PathBuf),
@@ -562,6 +566,15 @@ impl Controller {
         if files.is_empty() {
             return Err(CmdError::new("nothing_to_paste", "Nothing to paste. Copy sound files in your file manager, then paste here."));
         }
+        // Set files become new sets.
+        let (set_files, files): (Vec<PathBuf>, Vec<PathBuf>) = files.into_iter().partition(|p| crate::setfile::is_set_file(p));
+        let mut sets = Vec::new();
+        for f in &set_files {
+            match self.execute("set.import", json!({"path": f})) {
+                Ok(v) => sets.push(v),
+                Err(e) => self.notify_error(e.message),
+            }
+        }
         let (images, sounds): (Vec<PathBuf>, Vec<PathBuf>) = files.into_iter().partition(|p| is_image_path(p));
         let mut picture = Value::Null;
         if let Some(img) = images.first() {
@@ -580,7 +593,7 @@ impl Controller {
             (added, errors) = self.store.import(&sounds, si, None);
             self.report_import(added.len(), &errors);
         }
-        Ok(json!({"added": added, "errors": errors, "picture": picture}))
+        Ok(json!({"added": added, "errors": errors, "picture": picture, "sets": sets}))
     }
 
     fn report_import(&mut self, added: usize, errors: &[String]) {
@@ -892,6 +905,51 @@ impl Controller {
             }
 
             // ── tiles
+            "set.import" => match p.str("path")? {
+                None => {
+                    self.needs_window(id, "a path")?;
+                    self.effects.push(Effect::PickSetFile);
+                    ok()
+                }
+                Some(path) => {
+                    let sets = crate::setfile::import(&mut self.store, path.as_ref())
+                        .map_err(|e| CmdError::new("failed", format!("Couldn't import {path}: {e:#}")))?;
+                    // Show the first new set.
+                    self.store.library.selected_set = Some(sets[0].id);
+                    self.selected_tile = None;
+                    self.effects.push(Effect::ReleaseHeld);
+                    let tiles: usize = sets.iter().map(|s| s.tiles).sum();
+                    let what = match sets.as_slice() {
+                        [one] => format!("“{}”", one.name),
+                        many => format!("{} sets", many.len()),
+                    };
+                    self.notify(format!("Imported {what} ({tiles} sound{})", if tiles == 1 { "" } else { "s" }));
+                    Ok(json!({"sets": sets}))
+                }
+            },
+            "set.export" => {
+                let all = p.bool("all")?.unwrap_or(false);
+                let si = self.set_param(&p)?;
+                match p.str("path")? {
+                    None => {
+                        self.needs_window(id, "a path")?;
+                        self.effects.push(Effect::SaveSetFile((!all).then(|| self.store.library.sets[si].id)));
+                        ok()
+                    }
+                    Some(path) => {
+                        let sets: Vec<usize> = if all { (0..self.store.library.sets.len()).collect() } else { vec![si] };
+                        let out = crate::setfile::export(&self.store, &sets, path.as_ref())
+                            .map_err(|e| CmdError::new("failed", format!("Couldn't export: {e:#}")))?;
+                        let name = out.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                        if out.skipped.is_empty() {
+                            self.notify(format!("Exported {} sound{} to {name}", out.tiles, if out.tiles == 1 { "" } else { "s" }));
+                        } else {
+                            self.notify_error(format!("Exported to {name}; left out (audio missing): {}", out.skipped.join(", ")));
+                        }
+                        Ok(json!(out))
+                    }
+                }
+            }
             "tile.list" => {
                 let query = p.str("query")?.map(str::to_lowercase);
                 let sets: Vec<usize> = match p.str("set")? {

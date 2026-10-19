@@ -18,6 +18,7 @@ pub mod model;
 pub mod native_menu;
 pub mod paste;
 pub mod picture;
+pub mod setfile;
 pub mod starter;
 pub mod store;
 pub mod theme;

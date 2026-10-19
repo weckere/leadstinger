@@ -29,7 +29,8 @@ maintainer's own machines and a private gift edition are left out or reworded.
 | M13 | Panel theme | done | A second, user-chosen theme in a retro sci-fi control-panel style, with Antonio for text (D-024), and layouts for narrow tiled windows (D-034, D-035). |
 | M14 | Hyprland / Linux polish | in_progress (90%) | Done: paste-to-import, an opt-in X11/XWayland mode, a .desktop entry and icon (1fe576c), and Hyprland key binds via leadstinger-cli (ce912a3). Left: the maintainer's hands-on drag test in X11 mode. |
 | M15 | Starter packs | review (98%) | First made as a private starter pack: a folder of the user's own clips plus a manifest, imported once into an empty library (D-028), and a clipper that cuts and evens out clips (D-029). Generalised into starter packs for the release. |
-| M16 | Public release: LeadStinger 0.1.0 | in_progress (55%) | LeadStinger 0.1.0: the public build, contributor docs, a public export with a leak guard, this snapshot, CI and release builds. |
+| M16 | Public release: LeadStinger 0.1.0 | done | LeadStinger 0.1.0: the public build, contributor docs, a public export with a leak guard, this snapshot, CI and release builds. |
+| M17 | Set files | in_progress (90%) | Sets exported to and imported from one .lsset file, a zipped starter pack with every tile setting (D-039); released in 0.2.0. |
 
 ## Decisions
 
@@ -267,7 +268,15 @@ Each decision with its reasoning and the alternatives that were turned down.
 
 **Alternatives:** A smaller title font alone (at about 100 px even 13 pt Inter fits only about 6 characters, and control-panel needs size to read as control-panel). A two-line wrapped title (no vertical room in 96 px Panel tiles without losing the waveform; Console's name bar is one line by design). Clamping the saved `columns` to the window (destroys the setting on every resize). Horizontal scrolling of a fixed-width grid (hides tiles during a show). Deciding per tile whether to stack (rows with mixed layouts look broken).
 
-8 decisions about private infrastructure and the gift edition are left out of the public snapshot: D-013, D-015, D-023, D-030, D-031, D-033, D-036, D-037.
+### D-039: A set file is a zip with the .lsset extension whose contents are a starter-pack folder: manifest.json (format leadstinger-set, version 1) plus one folder of clips per set, pictures under <set>/pictures/. The manifest carries every tile setting (title, hotkey, colour, mode, loop, volume, fades, solo, trim, picture with layer/fit/opacity) and each set's layout, columns and auto-advance. set.import appends sets and never replaces anything (a taken name gets a number); set.export writes the current set or all of them. A .zip of a pack folder imports too, and a .lsset works as a starter pack.
+
+*2026-10-18 · M17*
+
+**Why:** The maintainer asked for sets importable from one file, "maybe a zip with a particular folder structure and some text metadata". Making it the starter-pack layout gives one format, one importer and one document: the gift folder became a set file with no conversion, and an unzipped set file is readable by hand. Appending, never merging, keeps an import from touching the user's own sets. Unzipping keeps every entry inside a temp folder (enclosed_name), skips links and Finder's __MACOSX files, and caps entries (20,000) and size (8 GB). Clips are stored as they are (already compressed); WAV/AIFF and the manifest are deflated. zip 9 with only deflate (zlib-rs): pure Rust, no encryption or other codecs.
+
+**Alternatives:** A new format separate from starter packs (two importers to keep in step). Embedding audio as base64 in one JSON (large, slow). A tar.gz (no random access; less familiar on Windows/macOS). Merging into a same-named set on import (surprising; can clobber the user's tiles). Exporting the whole library.json (carries ids and machine state, not a set).
+
+9 decisions about private infrastructure and the gift edition are left out of the public snapshot: D-013, D-015, D-023, D-030, D-031, D-033, D-036, D-037, D-038.
 
 ## Tests
 
@@ -276,7 +285,7 @@ Each decision with its reasoning and the alternatives that were turned down.
 | app | 3 | hotkey key map, glyph coverage, grid column fit (fit_columns) |
 | audio | 9 | mixer: end, trim, loop+fade, fade-in, pause, solo, resample, clamp, peaks |
 | brand | 3 | legacy library migration never overwrites; an leadstinger library is copied once; logo spells the name |
-| cli (tests/cli.rs) | 3 | The real binary: offline library commands, exit codes 2-5, --safe, ambiguity; online trigger/status/watch/run against an in-process socket |
+| cli (tests/cli.rs) | 4 | The real binary: offline library commands, exit codes 2-5, --safe, ambiguity; online trigger/status/watch/run against an in-process socket; set files between two libraries |
 | commands | 4 | unique ids, unique shortcuts, menu args, docs/CLI.md is up to date |
 | control | 3 | short socket paths, socket round-trip + events + waiting while the window holds the Controller, exclusive library lock |
 | controller | 6 | every command implemented; tile refs and ambiguity; play/stop/cue; tile.set validation and hotkeys; sets and view; pickers as effects |
@@ -287,16 +296,17 @@ Each decision with its reasoning and the alternatives that were turned down.
 | model | 8 | JSON round-trip, defaults, normalize, embedded-art rules |
 | paste | 3 | uri-list and gnome-copied-files parsing, percent-decoding, plain-text paths |
 | picture | 3 | decode, downscale keeping aspect, reject non-images |
+| setfile | 3 | export then import keeps every tile and set setting; a zipped folder imports and zip-slip entries are refused; safe, unique names |
 | starter | 3 | manifest pack fills an empty library once (hotkeys, colours, modes, missing and outside paths, marker, reload); folders without a manifest; a full library and an empty folder are left alone; search order |
 | store | 4 | import/reload/cleanup, shared media, corrupt library, user pictures |
 | theme | 3 | tokens equal the FigCraft exports (Console and Panel); colour helpers |
-| **total** | **74** | |
+| **total** | **78** | |
 
 ## Platforms
 
 | Platform | Builds | Tests | Runs | Audio |
 |---|---|---|---|---|
 | macOS arm64 | yes | yes | yes | partial |
-| macOS x86_64 | untested | untested | untested | untested |
+| macOS x86_64 | yes | untested | untested | untested |
 | Linux x86_64 | yes | yes | yes | yes |
 | Linux aarch64 | yes | yes | partial | untested |

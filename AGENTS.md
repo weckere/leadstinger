@@ -33,6 +33,7 @@ screens, graphics or fonts from films, series or games.
 | `src/app.rs`, `src/app/` | the egui interface; `panel.rs` is the Panel theme |
 | `src/theme.rs` | colours and fonts; must match `docs/design/*tokens.json` |
 | `src/brand.rs` | the app's names in one place |
+| `src/setfile.rs` | set files (`.lsset`): import and export of sets as one zip |
 | `src/starter.rs`, `src/demo.rs`, `src/wav.rs` | first-launch starter packs; the generated demo library |
 | `src/menu.rs`, `src/native_menu.rs` | the menu model; the macOS menu bar |
 | `src/paste.rs`, `src/picture.rs` | pasting files in; tile pictures and cover art |

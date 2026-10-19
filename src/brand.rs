@@ -34,8 +34,11 @@ mod names {
     pub const MOVE_FROM: &[&str] = &["Soundboard"];
     /// The second theme's name in menus and Settings.
     pub const PANEL_THEME: &str = "Panel";
+    /// The Panel theme's own title: the brand with a nod to the PADD look it comes from
+    /// (D-038). Its middle part is drawn in the accent colour.
+    pub const PANEL_LOGO: (&str, &str, &str) = ("LeadST", ":", "TNGer");
     /// The line under the title in the Panel theme.
-    pub const PANEL_SUBTITLE: &str = "Sound cue control";
+    pub const PANEL_SUBTITLE: &str = "PADD  ·  Sound cue control";
     /// The small readout above "Sets" in the Panel theme.
     pub const PANEL_TAG: &str = concat!("V", env!("CARGO_PKG_VERSION"));
 }
@@ -53,6 +56,7 @@ mod names {
     pub const COPY_FROM: &[&str] = &[];
     pub const MOVE_FROM: &[&str] = &["Soundboard"];
     pub const PANEL_THEME: &str = "PADD (LCARS)";
+    pub const PANEL_LOGO: (&str, &str, &str) = LOGO;
     pub const PANEL_SUBTITLE: &str = "PADD  ·  Sound cue control";
     pub const PANEL_TAG: &str = "02-1987";
 }
@@ -198,6 +202,7 @@ mod tests {
     #[test]
     fn logo_spells_the_name() {
         assert_eq!(format!("{}{}{}", LOGO.0, LOGO.1, LOGO.2), APP_NAME);
+        assert!(format!("{}{}{}", PANEL_LOGO.0, PANEL_LOGO.1, PANEL_LOGO.2).to_uppercase().ends_with("ST:TNGER"));
         assert!(!FILE_NAME.contains(':') && !SLUG.contains(':'));
         assert!(env_name("SILENT").ends_with("_SILENT"));
     }

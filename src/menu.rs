@@ -96,6 +96,9 @@ pub fn menus(s: &State, mac: bool) -> Vec<Menu> {
         // the shortcut itself when no field has focus.
         item("tile.paste"),
         Entry::Separator,
+        item("set.import"),
+        item("set.export"),
+        Entry::Separator,
         item("set.rename"),
         item("set.duplicate"),
         enabled(item("set.delete"), s.can_delete_set),

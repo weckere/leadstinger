@@ -57,11 +57,34 @@ Tile fields:
 | `color` | `red`, `orange`, `yellow`, `lime`, `green`, `mint`, `teal`, `cyan`, `blue`, `indigo`, `purple`, `pink`, `rose`, `crimson`, `brown` or `gray` |
 | `mode` | `toggle`, `restart`, `hold` or `pause` |
 | `loop` | `true` to loop |
-| `fade_out` | seconds to fade when the tile is stopped |
+| `fade_in`, `fade_out` | seconds; the fade-out also applies when the tile is stopped |
 | `volume` | 0–1 |
+| `solo` | `true`: starting this tile fades out every other one |
+| `trim_start`, `trim_end` | seconds into the file (`trim_end` left out: to the end) |
+| `picture` | an image for the tile, relative to the pack folder |
+| `picture_layer`, `picture_fit`, `picture_opacity` | `underlay`/`overlay`, `fill`/`fit`, 0–1 |
+
+Set fields, beside `name` and `tiles`: `layout` (`grid` or `list`), `columns` (1–12) and
+`auto_advance` (`true` to start the next cue when one finishes).
 
 `theme` (`console` or `panel`) and `appearance` (`dark`, `light` or `system`) choose the
-look the app opens in.
+look the app opens in. They apply to a starter pack only, never to an imported set file.
+
+## Set files (`.lsset`)
+
+A set file is a pack folder in one file, to hand a board to someone else or to keep a
+copy. It is a zip of the folder above: `manifest.json` at the top, then a folder per set.
+So a zipped pack folder is a set file too (a `.zip` works as well), and an unzipped set
+file is a starter pack.
+
+- **Export**: File ▸ Export Set… saves the current set; `leadstinger-cli set.export
+  show.lsset --all` saves every set. Every tile setting goes in, with its clip and its
+  picture.
+- **Import**: File ▸ Import Set…, or drop or paste the file onto the window, or
+  `leadstinger-cli set.import show.lsset`. Its sets are added after yours; nothing is
+  replaced, and a name that's already taken gets a number.
+- A set file can be the starter pack too: put it at `Starter.lsset` in the data folder, or
+  point `LEADSTINGER_STARTER_DIR` at it.
 
 ## Cutting clips: `scripts/clip-pack.py`
 

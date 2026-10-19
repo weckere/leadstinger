@@ -195,6 +195,30 @@ impl StingerApp {
                             self.run(inv!("tile.picture", {"tile": id, "path": path}));
                         }
                     }
+                    Effect::PickSetFile => {
+                        let file = rfd::FileDialog::new()
+                            .set_title("Import Set")
+                            .add_filter("Set files", &[crate::setfile::EXTENSION, "zip"])
+                            .pick_file();
+                        if let Some(path) = file {
+                            self.run(inv!("set.import", {"path": path}));
+                        }
+                    }
+                    Effect::SaveSetFile(set) => {
+                        let lib = &self.ctl.store.library;
+                        let name = set.and_then(|id| lib.set_index(id)).map_or_else(|| crate::app::APP_NAME.to_owned(), |i| lib.sets[i].name.clone());
+                        let file = rfd::FileDialog::new()
+                            .set_title("Export Set")
+                            .set_file_name(format!("{}.{}", name.replace(['/', '\\', ':'], "-"), crate::setfile::EXTENSION))
+                            .add_filter("Set files", &[crate::setfile::EXTENSION])
+                            .save_file();
+                        if let Some(path) = file {
+                            match set {
+                                Some(id) => self.run(inv!("set.export", {"path": path, "set": id})),
+                                None => self.run(inv!("set.export", {"path": path, "all": true})),
+                            }
+                        }
+                    }
                     Effect::StartRename(id) => {
                         if let Some(i) = self.ctl.store.library.set_index(id) {
                             self.renaming = Some((id, self.ctl.store.library.sets[i].name.clone(), false));
@@ -330,6 +354,11 @@ impl StingerApp {
         let paths: Vec<PathBuf> = dropped.into_iter().filter_map(|f| f.path).collect();
         if paths.is_empty() {
             return;
+        }
+        // Set files become new sets, wherever they're dropped.
+        let (set_files, paths): (Vec<PathBuf>, Vec<PathBuf>) = paths.into_iter().partition(|p| crate::setfile::is_set_file(p));
+        for f in set_files {
+            self.run(inv!("set.import", {"path": f}));
         }
         let target = pos.and_then(|p| self.tile_rects.iter().find(|(_, _, r)| r.contains(p)).map(|(id, i, _)| (*id, *i)));
         // Pictures go onto the tile they're dropped on; they're never imported as sounds.

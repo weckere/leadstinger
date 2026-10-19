@@ -1,6 +1,6 @@
 [package]
 name = "leadstinger"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.89"
 description = "LeadStinger, a cross-platform soundboard for live use"
@@ -29,6 +29,7 @@ symphonia = { version = "0.5", features = ["all"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 # `leadstinger-cli serve` shuts down cleanly (saving the library) on SIGTERM/SIGINT.
 signal-hook = "0.4"
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [profile.release]
 lto = "thin"

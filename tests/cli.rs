@@ -225,3 +225,31 @@ fn serve_runs_headless_and_saves_on_sigterm() {
     assert!(!control::socket_path(&data).exists(), "socket removed");
     std::fs::remove_dir_all(root).ok();
 }
+
+#[test]
+fn set_files_move_sets_between_libraries() {
+    let root = temp("sets");
+    let (a, b) = (root.join("a"), root.join("b"));
+    let files = tones(&root, &["Air Horn", "Rimshot"]);
+    assert_eq!(cli(&a, &["set.create", "Game Night"]).code, 0);
+    assert_eq!(cli(&a, &["add", &files[0], &files[1], "--set", "Game Night"]).code, 0);
+    assert_eq!(cli(&a, &["tile.set", "Rimshot", "--mode", "restart", "--fade-out", "0.3", "--hotkey", "r"]).code, 0);
+
+    // With the app closed, export writes one file; .lsset is added to a bare name.
+    let r = cli(&a, &["set.export", root.join("night").to_str().unwrap(), "--set", "Game Night"]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    let file = root.join("night.lsset");
+    assert_eq!((r.json["path"].as_str(), r.json["tiles"].as_u64()), (file.to_str(), Some(2)));
+
+    // A fresh library imports it as a new set, settings and all.
+    let r = cli(&b, &["set.import", file.to_str().unwrap()]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(r.json["sets"][0]["name"], "Game Night");
+    let t = cli(&b, &["tile.get", "Game Night/Rimshot"]).json;
+    assert_eq!((t["mode"].as_str(), t["key"].as_str()), (Some("restart"), Some("r")), "{t}");
+    assert!((t["fade_out"].as_f64().unwrap() - 0.3).abs() < 1e-6, "{t}");
+
+    // --safe keeps both inside --allow-dir.
+    assert_eq!(cli(&b, &["--safe", "set.import", file.to_str().unwrap()]).code, 5);
+    std::fs::remove_dir_all(root).ok();
+}

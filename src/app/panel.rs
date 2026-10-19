@@ -37,9 +37,9 @@ const TITLE_COMPACT: f32 = 38.0;
 /// Width the wide title may take before the Settings cap.
 const TITLE_ROOM: f32 = 254.0;
 
-/// The brand's logo (src/brand.rs) in the theme's colours: the middle part in peach.
+/// The theme's title (src/brand.rs `PANEL_LOGO`) in its colours: the middle part in peach.
 fn logo_parts() -> [(&'static str, Color32); 3] {
-    let (a, b, c) = crate::brand::LOGO;
+    let (a, b, c) = crate::brand::PANEL_LOGO;
     [(a, PANEL.amber), (b, PANEL.peach), (c, PANEL.amber)]
 }
 

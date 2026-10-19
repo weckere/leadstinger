@@ -59,6 +59,8 @@ leadstinger-cli tile.set "Air Horn" --mode hold --fade-out 0.5 --color red --hot
 leadstinger-cli tile.set "Applause" --trim-start 0.2 --trim-end 1.8 --loop false
 leadstinger-cli tile.picture "Applause" ~/Pictures/logo.png
 leadstinger-cli set.create "Game Night"; leadstinger-cli set.select "Game Night"
+leadstinger-cli set.export ~/show.lsset --all   # sets + clips + settings in one file
+leadstinger-cli set.import ~/show.lsset         # adds its sets after the user's own
 leadstinger-cli view.theme panel             # or console; view.appearance dark|light|system
 ```
 

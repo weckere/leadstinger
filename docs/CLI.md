@@ -213,6 +213,8 @@ In this mode:
 | `set.columns` | Set the grid columns | `{columns (1-12), set?}` (positional: `columns`) | library (works with the app closed) |
 | `set.autoAdvance` | Auto-advance cues | `{on? (default: toggle), set?}` (positional: `on`) | library (works with the app closed) |
 | `set.reassignKeys` | Reassign hotkeys by position | `{set?}  1–0, Q–P, A–;, Z–/ in tile order` (positional: `set`) | library (works with the app closed) |
+| `set.import` | Import Set | `{path? (a .lsset set file, a .zip, or a pack folder; without it the app opens a file picker)}  adds its sets after yours → {sets: [{id, name, tiles}]}` (positional: `path`) | library (works with the app closed) |
+| `set.export` | Export Set | `{path? (a .lsset file to write; without it the app asks where), set? (default current), all? (every set)}  clips, pictures and every setting in one file → {path, sets, tiles, bytes, skipped}` (positional: `path`) | library (works with the app closed) |
 
 ### view
 

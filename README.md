@@ -38,7 +38,8 @@ Originally made as a gift for Chris Fisher.
 - **Mixing**: per-sample fades, resampling, gapless loops, master volume, Stop All (Esc)
   and a choice of output device.
 - **Two themes**: *Console*, a dark mixing-desk look (with Light and System
-  appearances), and *Panel*, a retro sci-fi control panel set in condensed capitals.
+  appearances), and *Panel*, a retro sci-fi control panel set in condensed capitals,
+  titled LEADST:TNGER.
   Choose in View ▸ Theme or Settings.
 - **Menus**: the native menu bar on macOS and a menu bar in the window on Linux, built
   from one model, so every item and shortcut matches.
@@ -46,8 +47,10 @@ Originally made as a gift for Chris Fisher.
   app, or edits the library while the app is closed.
 - **Headless**: `leadstinger-cli serve` plays with no window, for a box with speakers
   and no screen.
-- **Starter packs**: hand someone a ready-made board that fills their library on first
-  launch. See [starter/README.md](starter/README.md).
+- **Set files**: export a set (or all of them) to one `.lsset` file, with every clip,
+  picture and setting, and import it into any other library. Starter packs hand someone a
+  ready-made board that fills their library on first launch. See
+  [starter/README.md](starter/README.md).
 
 ## Install
 

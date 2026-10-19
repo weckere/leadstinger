@@ -121,8 +121,8 @@ win = s.frame(None, "LeadStinger — Panel theme", 0, 0, W, H, fill=P["black"], 
 top_elbow(win, 8, 8, COL, TOP, 780, 214, P["amber"])
 label(win, "Sets", 16, 178, COL - 24, size=24, style=BLACK)
 label(win, "01-2026", 16, 152, COL - 24, size=12)
-s.text(win, "LEADSTINGER", 792, 4, size=43, style=BLACK, color=P["amber"], letterSpacing="1%")
-s.text(win, "SOUND CUE CONTROL", 792, 52, size=13, style=COND, color=P["dim"], letterSpacing="6%")
+s.text(win, "LEADST:TNGER", 792, 6, size=39, style=BLACK, color=P["amber"], letterSpacing="1%")
+s.text(win, "PADD  ·  SOUND CUE CONTROL", 792, 52, size=13, style=COND, color=P["dim"], letterSpacing="6%")
 s.frame(win, "top cap", 1052, 8, W - 1052 - 8, TOP, fill=P["peach"], radius=[0, TOP / 2, TOP / 2, 0])
 
 # Left column: set blocks under the elbow.

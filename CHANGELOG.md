@@ -4,7 +4,24 @@ All notable changes to LeadStinger. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [0.1.0] - unreleased
+## [0.2.0] - 2026-10-18
+
+### Added
+
+- **Set files** (`.lsset`): File ▸ Export Set… writes a set, with every clip, picture and
+  setting, to one file; File ▸ Import Set… (or dropping or pasting the file) adds its sets
+  to any library. `leadstinger-cli set.export` and `set.import` do the same, and
+  `set.export --all` saves every set. A set file is a zipped starter pack, so either works
+  as the other.
+- Starter-pack manifests carry every tile setting: fade-in, solo, trim, pictures, and each
+  set's layout, columns and auto-advance.
+
+### Changed
+
+- The Panel theme is titled **LEADST:TNGER**, with the subtitle **PADD · Sound cue
+  control**.
+
+## [0.1.0] - 2026-10-18
 
 The first public release.
 
@@ -46,4 +63,5 @@ The first public release.
   binds can fire clips from anywhere.
 - A Nix flake with a package, a dev shell, the NixOS module and a VM test.
 
+[0.2.0]: https://github.com/weckere/leadstinger/releases/tag/v0.2.0
 [0.1.0]: https://github.com/weckere/leadstinger/releases/tag/v0.1.0

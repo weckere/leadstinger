@@ -96,6 +96,10 @@ pub static COMMANDS: &[Spec] = &[
     spec!("set.columns", "Set the grid columns", Library, Some("columns"), "{columns (1-12), set?}"),
     spec!("set.autoAdvance", "Auto-advance cues", Library, Some("on"), "{on? (default: toggle), set?}"),
     spec!("set.reassignKeys", "Reassign hotkeys by position", Library, Some("set"), "{set?}  1–0, Q–P, A–;, Z–/ in tile order"),
+    spec!("set.import", "Import Set…", Library, Some("path"),
+        "{path? (a .lsset set file, a .zip, or a pack folder; without it the app opens a file picker)}  adds its sets after yours → {sets: [{id, name, tiles}]}"),
+    spec!("set.export", "Export Set…", Library, Some("path"),
+        "{path? (a .lsset file to write; without it the app asks where), set? (default current), all? (every set)}  clips, pictures and every setting in one file → {path, sets, tiles, bytes, skipped}"),
     // ── tiles ───────────────────────────────────────────────────────────────
     spec!("tile.list", "List tiles", Query, Some("set"), "{set? (default current; \"*\" for all), query? (title contains)}  → [{id, title, set, position, key, mode, duration, ...}]"),
     spec!("tile.get", "Show a tile", Query, Some("tile"), "{tile}  → every setting of the tile"),

@@ -174,6 +174,15 @@ volume, and the theme to open in. A marker file in the data directory makes sure
 is imported only once. [starter/README.md](starter/README.md) gives the search order and
 the manifest format.
 
+## Set files
+
+One or more sets can be saved to a single file (`.lsset`) and imported into another
+library: File ▸ Export Set… and File ▸ Import Set…, or dropping or pasting the file onto
+the window. The file holds every tile setting and each tile's clip and picture. Importing
+adds the file's sets after the library's own and replaces nothing; a set whose name is
+taken gets a number. The file is a zip of a starter-pack folder, so the two formats are one
+([starter/README.md](starter/README.md)).
+
 ## Scripting
 
 Every action a menu item, button, shortcut or setting performs is a named command in
