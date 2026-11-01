@@ -1,8 +1,8 @@
 [package]
 name = "leadstinger"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
-rust-version = "1.89"
+rust-version = "1.95"
 description = "LeadStinger, a cross-platform soundboard for live use"
 license = "MIT"
 authors = ["Eric Wecker"]
@@ -12,15 +12,29 @@ keywords = ["soundboard", "audio", "podcast", "live", "cue"]
 categories = ["multimedia::audio", "command-line-utilities"]
 exclude = ["/gift", "/dist", "/docs/design/*.figcraft"]
 
-[features]
-# The gift build's branding: ST:TNGer instead of LeadStinger (src/brand.rs, D-036).
-sttnger = []
-
 [dependencies]
 anyhow = "1"
-cpal = "0.15"
+cpal = "0.18.2"
 directories = "5"
-eframe = "0.31"
+# System-wide keys: Carbon hotkeys on macOS, XGrabKey in X11 sessions (src/hotkeys.rs).
+global-hotkey = "0.9"
+# OSC control (src/osc.rs, D-042).
+rosc = "0.11"
+# MIDI input (CoreMIDI on macOS, the ALSA sequencer on Linux).
+midir = "0.11"
+# Pitch shift that keeps the speed (D-043): Signalsmith Stretch (MIT, C++ via cc/bindgen).
+signalsmith-stretch = "0.1"
+# EBU R128 loudness for tile.normalize (pure Rust).
+ebur128 = { version = "0.1", default-features = false }
+# glow (OpenGL) rather than eframe's default wgpu renderer: the Linux packages ship
+# Mesa's GL stack, and every platform check so far ran on glow (D-050).
+eframe = { version = "0.37", default-features = false, features = ["accesskit", "clipboard", "default_fonts", "glow", "links", "wayland", "x11"] }
+# Only for this feature, so keep it the same version as eframe: since egui 0.37 its own
+# symbol and emoji fonts (⌘ ✚ ⚙ ▶ ⏹ ⚠ ✔ …) are opt-in, in favour of system fonts (D-050).
+egui = { version = "0.37", default-features = false, features = ["monochrome_emoji_fonts"] }
+# Checks a user theme's fonts before egui gets them (egui panics on one it can't parse):
+# the parser egui itself uses, at the same version (D-106).
+skrifa = { version = "0.44", default-features = false, features = ["std"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
@@ -29,7 +43,15 @@ symphonia = { version = "0.5", features = ["all"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 # `leadstinger-cli serve` shuts down cleanly (saving the library) on SIGTERM/SIGINT.
 signal-hook = "0.4"
+# QuipClipper downloads (src/quip.rs, D-081): HTTPS through rustls, checked against the
+# system's trusted certificates; no redirects followed for us, no gzip.
+ureq = { version = "3", default-features = false, features = ["rustls", "platform-verifier"] }
+url = "2"
+# Finding QuipClipper on the local network (src/quip/discover.rs, D-134): mDNS/DNS-SD,
+# pure Rust, no async runtime.
+mdns-sd = { version = "0.21", default-features = false }
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+flacenc = { version = "0.5.1", default-features = false }
 
 [profile.release]
 lto = "thin"
@@ -39,6 +61,11 @@ strip = true
 [profile.dev.package."*"]
 opt-level = 2
 
+# Tests drive the real window headlessly and walk its AccessKit tree (src/app/a11y_tests.rs):
+# egui's own test harness, the same version as egui (MIT OR Apache-2.0).
+[dev-dependencies]
+egui_kittest = { version = "0.37", features = ["eframe"] }
+
 # Native menu bar on macOS (the same crate and approach PhotoCraft uses). Linux and
 # Windows draw their menu bar inside the window with egui, so no GTK is needed.
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -46,11 +73,33 @@ muda = { version = "=0.21.2", default-features = false }
 # Turn off AppKit's automatic window tabbing (its "Show Tab Bar" items in View).
 # Same versions winit already uses.
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSWindow", "NSPasteboard", "NSPasteboardItem"] }
-# Reading file URLs off the pasteboard (paste to import).
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSEnumerator"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSWindow", "NSPasteboard", "NSPasteboardItem", "NSView", "NSEvent"] }
+# The window's view, to read where a Finder drag is (src/mac_drop.rs). Same version eframe uses.
+raw-window-handle = "0.6"
+# Reading file URLs off the pasteboard (paste to import); leadstinger:// links arrive as
+# Apple Events (src/quip.rs).
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSEnumerator", "NSAppleEventManager", "NSAppleEventDescriptor", "NSNotification", "NSURL"] }
+# The run loop CoreMIDI's device notifications arrive on (src/midi.rs, D-123). The same
+# crate midir's CoreMIDI backend already pulls in.
+core-foundation-sys = "0.8"
 
-# Linux: choose the X11 backend at launch (STTNGER_X11 / the Window system setting).
-# Same winit eframe already uses; only its X11 extension trait is needed here.
+# Same winit eframe already uses. Linux: choose the X11 backend at launch (LEADSTINGER_X11
+# / the Window system setting), with its default features (Wayland loaded at runtime,
+# client-side decorations) because eframe is built without its defaults (D-050). macOS:
+# start a background run without activating (src/background.rs).
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
+winit = "0.30"
+
 [target.'cfg(target_os = "linux")'.dependencies]
-winit = { version = "0.30", default-features = false, features = ["x11"] }
+# System-wide keys on Wayland through the GlobalShortcuts portal (src/portal.rs): the
+# same portal library, flavour and executor the file dialogs (rfd) already pull in.
+ashpd = { version = "0.11", default-features = false, features = ["async-std"] }
+pollster = "0.4"
+futures-util = "0.3"
+futures-channel = "0.3"
+# Native Wayland file drops (D-108): the clipboard crate egui-winit already uses there,
+# in LeadStinger's copy with drag-and-drop handlers (vendor/smithay-clipboard).
+smithay-clipboard = "0.7.3"
+
+[patch.crates-io]
+smithay-clipboard = { path = "vendor/smithay-clipboard" }

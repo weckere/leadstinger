@@ -62,7 +62,7 @@ On a terminal you get short text; otherwise, one JSON value per command (errors 
 leadstinger-cli trigger key:1                       # what pressing 1 in the app does
 leadstinger-cli play "Game Night/Applause"
 leadstinger-cli stop-all --immediate
-leadstinger-cli tile.set "Air Horn" --mode hold --fade-out 0.5 --color red
+leadstinger-cli tile.set "Air Horn" --hold --fade-out 0.5 --color red
 leadstinger-cli add ~/Clips/*.flac --set "Game Night"
 leadstinger-cli view.theme panel
 leadstinger-cli status --json | jq '.playing[].title'
@@ -81,6 +81,9 @@ In the classic `hyprland.conf`:
 ```
 bind = , F13, exec, leadstinger-cli trigger key:1
 bind = SUPER, Escape, exec, leadstinger-cli stop-all
+# Talk-over: hold F15 to duck the beds (bindr runs on release)
+bind = , F15, exec, leadstinger-cli duck.hold on
+bindr = , F15, exec, leadstinger-cli duck.hold off
 ```
 
 ## Headless
@@ -132,5 +135,51 @@ In this mode:
   on the forced command line are refused (exit 5);
 - the remote side can't choose `--data-dir`, `--allow-dir` or `--offline`, and `run`
   reads its script only from stdin.
+
+## OSC
+
+`osc.enable` turns on the OSC listener (UDP, 127.0.0.1:9000 unless `--lan true`); it
+refuses what `--safe` refuses, plus files, bindings and `osc.*`. Positions are 1-based in
+the current set, and an argument of 1 or more is a press, below 1 a release.
+
+| Address | Arguments | Does |
+|---|---|---|
+| `/ls/tile/N/trigger` | `[f]` | tile N, as its hotkey would |
+| `/ls/key/K` | `[f]` | the tile with hotkey K |
+| `/ls/trigger` | `s:tile [f]` | a tile by name, id or Set/Title |
+| `/ls/play`, `/ls/stop`, `/ls/playon` | `s:tile` | `tile.play` / `tile.stop` / `tile.playOn` (`/ls/release`, its old name, still works) |
+| `/ls/jump` | `s:tile s:marker` | `tile.jump` |
+| `/ls/go` | | `cue.go` |
+| `/ls/stopall` | `[f: 1 = at once]` | `transport.stopAll` |
+| `/ls/master` | `f (0-1)` | `master.volume` |
+| `/ls/duck` | `f (1/0)` | `duck.hold` |
+| `/ls/cmd` | `s:command [s:json params]` | any other allowed command |
+| `/ls/resync` | | send the whole feedback state again now |
+
+With `--feedback host:port`, the app sends these there as they change, and all of them
+every five seconds:
+
+| Address | Value |
+|---|---|
+| `/ls/set` | `s` the current set's name |
+| `/ls/tiles` | `f` how many tiles it has |
+| `/ls/tile/N/state` | `f` 0 stopped, 1 playing, 2 paused |
+| `/ls/tile/N/title` | `s` |
+| `/ls/tile/N/color` | `s` the colour's name (`red`, `blue`, ...) |
+| `/ls/tile/N/rgb` | `s` that colour as `#RRGGBB` (the Console theme's) |
+| `/ls/tile/N/remaining` | `f` seconds left, to 0.1 s; 0 when stopped |
+| `/ls/tile/N/progress` | `f` 0-1, to 0.01 |
+| `/ls/tile/N/time` | `s` a countdown such as `1:05`; empty when stopped |
+| `/ls/tile/N/level` | `f` 0-1, to 0.01: the tile's level on the window's meter scale (−20 dB is 0.3, −6 dB 0.79), up to ten times a second while it plays (a steady level is sent once, then with the five-second refresh); 0 when it stops. `--levels false` leaves it out |
+| `/ls/now/title`, `/ls/now/remaining`, `/ls/now/progress`, `/ls/now/time`, `/ls/now/level` | the tile in the window's counter: the last one started while it sounds, else the playing tile that ends first |
+| `/ls/cue/next` | `f` the next cue's position, 0 for none |
+| `/ls/cue/next/title` | `s` |
+| `/ls/cue/current` | `f` the position GO last played (the cue pointer), 0 for none |
+| `/ls/midi/page`, `/ls/midi/pages` | `f` the auto-mapped pads' page (from 1) and how many there are |
+| `/ls/master` | `f` 0-1 |
+| `/ls/duck` | `f` 1 while the beds are ducked |
+| `/ls/recording` | `f` 1 while recording |
+
+An address that goes away (a tile removed, a smaller set) is sent once more as `""` or 0.
 
 ## Commands

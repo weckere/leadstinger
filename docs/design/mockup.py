@@ -25,7 +25,7 @@ DARK = {
 }
 LIGHT = dict(DARK, window="#B8BABE", panel="#CCCED2", panel2="#C2C4C8", bar="#AEB0B4",
              group="#C4C6CA", border="#8E9094", borderLight="#9EA0A4", text="#18191C",
-             textDim="#4A4C50", accent="#3E74B4", key="#DADCE0", keyHover="#E6E8EC",
+             textDim="#404246", accent="#3E74B4", key="#DADCE0", keyHover="#E6E8EC",
              keyBorder="#8E9094", selected="#A8BCD8", meterOff="#34363A",
              meterGreen="#24A03A", meterYellow="#BEA214", meterRed="#C32A23")
 TRACK = ["#5684D6", "#5EAAD6", "#50BEA8", "#68BA62", "#A8C44C", "#DEC448", "#E6983E", "#DE6848",

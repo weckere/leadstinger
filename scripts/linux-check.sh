@@ -9,7 +9,7 @@ nice -n 19 nix build --cores "$cores" --max-jobs 1 -L .#default 2>&1 | tail -3
 ls -la result/bin/
 data=$(mktemp -d)
 LEADSTINGER_DATA_DIR=$data LEADSTINGER_DEMO=1 LEADSTINGER_SILENT=1 \
-LEADSTINGER_SCRIPT="play:0,play:5,play:8,edit,select:4" \
+LEADSTINGER_SCRIPT="play:0,play:5,play:8,select:4" \
 LEADSTINGER_SNAPSHOT=$PWD/linux-$(uname -m).png LEADSTINGER_SNAPSHOT_FRAMES=90 \
   nix develop -c xvfb-run -a -s "-screen 0 1400x900x24" timeout 120 ./result/bin/leadstinger 2>&1 | grep -v "^ALSA" | tail -5
 rm -rf "$data"

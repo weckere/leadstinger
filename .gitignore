@@ -5,6 +5,9 @@
 /dist/
 .claude/settings.local.json
 !docs/design/*.png
+!docs/design/logo/*.png
+!assets/icons/*.png
+!public/assets/icons/*.png
 !docs/screenshots/*.png
 # Starter packs (starter/README.md): your own clips never go in git
 /starter/clips/

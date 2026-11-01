@@ -30,7 +30,6 @@ fn cli(data: &Path, args: &[&str]) -> Out {
         .arg("--json")
         .args(args)
         .env_remove("LEADSTINGER_DATA_DIR")
-        .env_remove("STTNGER_DATA_DIR")
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -67,6 +66,14 @@ fn offline_library_commands() {
     let r = cli(&data, &["tile.set", "Air Horn", "--mode", "hold", "--fade-out", "0.5", "--hotkey", "r"]);
     assert_eq!(r.code, 0, "{}", r.stderr);
     assert_eq!((r.json["mode"].as_str(), r.json["fade_out"].as_f64(), r.json["key"].as_str()), (Some("hold"), Some(0.5), Some("r")));
+    // The pad options as flags (D-145): bare flags turn them on.
+    let r = cli(&data, &["tile.set", "Air Horn", "--pausable", "--loop"]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!((r.json["hold"].as_bool(), r.json["pausable"].as_bool(), r.json["loop"].as_bool()), (Some(true), Some(true), Some(true)));
+    let r = cli(&data, &["tile.set", "Air Horn", "--oneshot", "--hold", "false"]);
+    assert_eq!((r.json["hold"].as_bool(), r.json["pausable"].as_bool(), r.json["one_shot"].as_bool()), (Some(false), Some(false), Some(true)), "{}", r.stderr);
+    assert_ne!(cli(&data, &["tile.set", "Air Horn", "--pausable", "--one-shot"]).code, 0, "both at once is refused");
+    cli(&data, &["tile.set", "Air Horn", "--mode", "hold"]);
 
     // Two positionals: <tile> <path>.
     let pic = root.join("pic.png");
@@ -169,6 +176,15 @@ fn commands_reach_the_running_app() {
         String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
     assert!(events.iter().any(|e| e["event"] == "tile.stopped" && e["title"] == "Rimshot"), "{events:?}");
 
+    // The Random button's command (D-171): the set's only tile, every time, and the app
+    // says which it played.
+    for _ in 0..2 {
+        let r = cli(&data, &["tile.random"]);
+        assert_eq!((r.code, r.json["title"].as_str()), (0, Some("Rimshot")), "{} {}", r.json, r.stderr);
+    }
+    assert_eq!(lender.with(|c| c.notice.as_ref().map(|n| n.text.clone())).as_deref(), Some("Random: playing Rimshot"));
+    assert_eq!(cli(&data, &["stop-all", "--immediate"]).code, 0);
+
     // A script: one result line per step, stopping at the first failure.
     let script = root.join("show.jsonl");
     std::fs::write(
@@ -245,6 +261,8 @@ fn set_files_move_sets_between_libraries() {
     let r = cli(&b, &["set.import", file.to_str().unwrap()]);
     assert_eq!(r.code, 0, "{}", r.stderr);
     assert_eq!(r.json["sets"][0]["name"], "Game Night");
+    let sets = cli(&b, &["sets"]).json;
+    assert_eq!(sets.as_array().map(Vec::len), Some(1), "the new library's empty Set 1 is replaced: {sets}");
     let t = cli(&b, &["tile.get", "Game Night/Rimshot"]).json;
     assert_eq!((t["mode"].as_str(), t["key"].as_str()), (Some("restart"), Some("r")), "{t}");
     assert!((t["fade_out"].as_f64().unwrap() - 0.3).abs() < 1e-6, "{t}");
@@ -252,4 +270,36 @@ fn set_files_move_sets_between_libraries() {
     // --safe keeps both inside --allow-dir.
     assert_eq!(cli(&b, &["--safe", "set.import", file.to_str().unwrap()]).code, 5);
     std::fs::remove_dir_all(root).ok();
+}
+
+/// Check for Updates from the CLI, offline, against a saved GitHub answer (never the
+/// network): a newer release gives its page and notes; the same version is "latest"; a
+/// bad answer fails the command (D-206).
+#[test]
+fn check_for_updates_reads_the_latest_release() {
+    let dir = temp("updates");
+    let run = |tag: &str| {
+        let feed = dir.join(format!("{tag}.json"));
+        std::fs::write(
+            &feed,
+            json!({"tag_name": tag, "draft": false, "prerelease": false, "html_url": format!("https://github.com/weckere/leadstinger/releases/tag/{tag}"), "body": "- New things"}).to_string(),
+        )
+        .unwrap();
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_leadstinger-cli"));
+        cmd.arg("--data-dir").arg(&dir).arg("--offline").arg("--json").arg("app.checkForUpdates").env_remove("LEADSTINGER_DATA_DIR").env("LEADSTINGER_UPDATE_JSON", &feed);
+        cmd.output().unwrap()
+    };
+    let newer = run("v999.0.0");
+    assert!(newer.status.success(), "{}", String::from_utf8_lossy(&newer.stderr));
+    let v: Value = serde_json::from_slice(&newer.stdout).unwrap();
+    assert_eq!((v["status"].as_str(), v["latest"].as_str(), v["notes"].as_str()), (Some("newer"), Some("999.0.0"), Some("- New things")));
+    assert_eq!(v["url"], "https://github.com/weckere/leadstinger/releases/tag/v999.0.0");
+
+    let same = run(&format!("v{}", env!("CARGO_PKG_VERSION")));
+    let v: Value = serde_json::from_slice(&same.stdout).unwrap();
+    assert_eq!(v["status"], "latest");
+
+    let bad = run("nightly");
+    assert_eq!(bad.status.code(), Some(1));
+    std::fs::remove_dir_all(dir).ok();
 }

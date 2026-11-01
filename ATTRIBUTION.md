@@ -51,11 +51,9 @@
 
 ## Name
 
-"LeadStinger" is a pun on "lead singer"; a stinger is a short sound cue. The source can
-also build a private gift edition under another name (the `sttnger` cargo feature). It
-uses the same code and assets as LeadStinger and contains no third-party artwork, logos,
-fonts or sounds. Any names of other products or franchises that appear in the source
-belong to their owners, and this project isn't affiliated with or endorsed by them.
+"LeadStinger" is a pun on "lead singer"; a stinger is a short sound cue. Any names of
+other products or franchises that appear in the source belong to their owners, and this
+project isn't affiliated with or endorsed by them.
 
 LeadStinger ships no audio. Clips, including the ones in a starter pack, are the user's
 own.
@@ -66,3 +64,49 @@ The code is written for this project; its behaviour is defined by [SPEC.md](SPEC
 Code adapted from a permissively licensed project is listed here with its licence notice
 ([AGENTS.md](AGENTS.md) has the rule). This project isn't affiliated with or endorsed by
 the makers of any other soundboard app.
+
+Pitch shifting uses [Signalsmith Stretch](https://github.com/Signalsmith-Audio/signalsmith-stretch)
+(MIT, Copyright (c) 2022 Geraint Luff / Signalsmith Audio Ltd., with Signalsmith Linear,
+Copyright (c) 2025 Signalsmith Audio), compiled in through the
+[signalsmith-stretch](https://crates.io/crates/signalsmith-stretch) crate (MIT, Copyright
+2024 Colin Marc). All three use the MIT licence, whose text is in [LICENSE](LICENSE).
+
+The accessibility test drives the window headlessly with
+[egui_kittest](https://crates.io/crates/egui_kittest) (MIT OR Apache-2.0), egui's own test
+harness. It is a test-only dependency: none of it is built into the app.
+
+FLAC export uses the [flacenc](https://github.com/yotarok/flacenc-rs) crate (Apache-2.0,
+Copyright 2022-2024 Google LLC and Copyright 2025 the flacenc-rs developers), compiled in
+from crates.io and used unmodified. The licence's text is at
+<https://www.apache.org/licenses/LICENSE-2.0>.
+
+AC-3, DTS and video files are converted at import by [FFmpeg](https://ffmpeg.org), an
+optional program you install separately (LGPL or GPL, depending on the build). It isn't
+part of LeadStinger: the app runs it as a separate process when it finds one, and no
+FFmpeg code is compiled in or shipped with the app. The Nix package only puts nixpkgs'
+`ffmpeg-headless` on its PATH.
+
+QuipClipper clips are downloaded with [ureq](https://github.com/algesten/ureq) (MIT or
+Apache-2.0) over [rustls](https://github.com/rustls/rustls) (Apache-2.0, ISC or MIT),
+whose cryptography is [ring](https://github.com/briansmith/ring) (Apache-2.0 and ISC; it
+includes code from BoringSSL, Copyright Google Inc., under the ISC licence).
+Certificates are checked with
+[rustls-platform-verifier](https://github.com/rustls/rustls-platform-verifier) (MIT or
+Apache-2.0) against the system's trusted certificates. ureq also carries Mozilla's root
+certificates, from [webpki-roots](https://github.com/rustls/webpki-roots)
+(CDLA-Permissive-2.0).
+
+Finding QuipClipper on the local network uses [mdns-sd](https://github.com/keepsimple1/mdns-sd)
+(Apache-2.0 or MIT), with [flume](https://github.com/zesterer/flume) (Apache-2.0 or MIT),
+[if-addrs](https://github.com/messense/if-addrs) (MIT or BSD-3-Clause),
+[socket-pktinfo](https://github.com/pixsper/socket-pktinfo) (MIT),
+[socket2](https://github.com/rust-lang/socket2) and [mio](https://github.com/tokio-rs/mio)
+(MIT; socket2 also Apache-2.0).
+
+File drops on native Wayland come from a modified copy of
+[smithay-clipboard](https://github.com/smithay/smithay-clipboard) 0.7.3 (MIT, Copyright
+(c) 2018 Lucas Timmins & Victor Berger), in
+[vendor/smithay-clipboard](vendor/smithay-clipboard) with its licence notice. It is the
+crate egui uses for the Wayland clipboard, swapped in through `[patch.crates-io]`;
+LeadStinger's change adds `src/dnd.rs` and fills in its drag-and-drop handlers
+(its README says what changed and why).

@@ -41,7 +41,7 @@ For control over each tile, add a `manifest.json`:
   "sets": [
     { "name": "Reactions", "tiles": [
       { "file": "Reactions/Applause.wav", "title": "Big Applause", "hotkey": "a",
-        "color": "green", "mode": "restart", "fade_out": 0.5 }
+        "color": "green", "one_shot": true, "fade_out": 0.5 }
     ] }
   ]
 }
@@ -53,14 +53,28 @@ Tile fields:
 |---|---|
 | `file` | the clip, relative to the pack folder |
 | `title` | the tile's title (default: the file name) |
-| `hotkey` | one of `1`–`0`, `a`–`z`, `; , . /` (`""` for none; left out, the app picks one) |
+| `hotkey` | a key on the keyboard's four rows, `1`–`=`, `q`–`]`, `a`–`'`, `z`–`/`, or one with Option/Alt as `alt+1` (`""` for none). A key given here is set by hand and stays with the tile; left out, the tile takes its slot's key, which follows its row (row 1: `1`–`=`, row 2: `q`–`]`, …, rows 5–8: the same with `alt+`) |
 | `color` | `red`, `orange`, `yellow`, `lime`, `green`, `mint`, `teal`, `cyan`, `blue`, `indigo`, `purple`, `pink`, `rose`, `crimson`, `brown` or `gray` |
-| `mode` | `toggle`, `restart`, `hold` or `pause` |
+| `hold`, `pausable`, `one_shot` | `true` turns on that pad option: Hold plays while held; Pausable makes a second press pause it; One-shot makes a second press start it again (Pausable and One-shot exclude each other) |
+| `mode` | the older way: `toggle` (none), `pause` (Pausable), `restart` (One-shot) or `hold` (Hold); any of the three options above wins over it |
 | `loop` | `true` to loop |
-| `fade_in`, `fade_out` | seconds; the fade-out also applies when the tile is stopped |
+| `fade_in`, `fade_out` | seconds, at the start and the end of the clip |
+| `stop_fade` | seconds to fade when the tile is stopped; 0 stops at once (with the 0.1 s de-click every stop gets). Left out, it's the same as `fade_out` |
+| `pre_wait` | seconds between triggering the tile and its start |
+| `link`, `post_wait` | `continue` (the next cue starts `post_wait` seconds after this one starts) or `follow` (… after it ends); left out, the next cue waits for GO |
 | `volume` | 0–1 |
+| `output` | an output's name; used only if the library has an output of that name |
+| `channels` | a multichannel file's channel mix: `[{"to": "left", "gain_db": 0}, …]`, one per source channel in file order (`to` is `left`, `right`, `both` or `mute`); absent is the automatic stereo downmix |
+| `sends` | `[{"output": "Main", "gain_db": 0}, {"output": "Stream", "gain_db": -6}]`: every output the tile plays on, each at its own level; wins over `output`; sends to outputs the library lacks are dropped |
+| `speed` | 0.5–2 (the pitch follows) |
+| `pitch` | semitones, −12 to +12, keeping the speed |
+| `fade_curve` | `linear`, `equal_power`, `exponential` or `s_curve` (default `gentle`) |
+| `gain_db` | extra gain in dB, −24 to +24 |
+| `duck` | `ducks` (beds dip while it plays) or `ducked` (a bed) |
 | `solo` | `true`: starting this tile fades out every other one |
 | `trim_start`, `trim_end` | seconds into the file (`trim_end` left out: to the end) |
+| `vamp` | `[start, end]` seconds into the file: loops until the next press (or GO) lets it play on |
+| `markers` | `[{"name": "Outro", "at": 42.5}]`: points to jump to (seconds into the file) |
 | `picture` | an image for the tile, relative to the pack folder |
 | `picture_layer`, `picture_fit`, `picture_opacity` | `underlay`/`overlay`, `fill`/`fit`, 0–1 |
 
@@ -68,7 +82,12 @@ Set fields, beside `name` and `tiles`: `layout` (`grid` or `list`), `columns` (1
 `auto_advance` (`true` to start the next cue when one finishes).
 
 `theme` (`console` or `panel`) and `appearance` (`dark`, `light` or `system`) choose the
-look the app opens in. They apply to a starter pack only, never to an imported set file.
+look the app opens in. `theme_file` names a user theme inside the pack (a `.lstheme`
+folder or zip, see "Your own themes" in the main README): the first launch installs it and
+opens in it. Builds without user themes ignore `theme_file` and open in `theme`, so give
+the theme's base there too. `theme` and `appearance` apply to a starter pack only. An
+imported set file never changes the look by itself: its `theme_file` theme is installed,
+and the app asks whether to use it (below).
 
 ## Set files (`.lsset`)
 
@@ -79,10 +98,16 @@ file is a starter pack.
 
 - **Export**: File ▸ Export Set… saves the current set; `leadstinger-cli set.export
   show.lsset --all` saves every set. Every tile setting goes in, with its clip and its
-  picture.
+  picture. If a user theme is in use, it goes in too, as a `.lstheme` folder named by
+  `theme_file` (manifest version 2).
 - **Import**: File ▸ Import Set…, or drop or paste the file onto the window, or
   `leadstinger-cli set.import show.lsset`. Its sets are added after yours; nothing is
-  replaced, and a name that's already taken gets a number.
+  replaced, and a name that's already taken gets a number. A theme in the file is
+  installed as a user theme (replacing one of the same name), and the window asks "Use
+  its theme?"; `--use_theme true` or `false` answers from a script.
+- **A themed pack in one file**: import your clips, import or make the theme and use
+  it, then export every set. The `.lsset` you get opens in that theme as a starter pack,
+  and offers it when imported.
 - A set file can be the starter pack too: put it at `Starter.lsset` in the data folder, or
   point `LEADSTINGER_STARTER_DIR` at it.
 

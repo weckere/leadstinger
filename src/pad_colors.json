@@ -1,0 +1,39 @@
+[
+  {
+    "name": "launchpad",
+    "about": "Novation Launchpad Mk2, Mini Mk3, X and Pro Mk3 (the 128-colour velocity palette): static on channel 1, pulsing on channel 3",
+    "idle": {
+      "red": 5, "orange": 9, "yellow": 13, "lime": 17, "green": 21, "mint": 29, "teal": 33, "cyan": 37,
+      "blue": 41, "indigo": 45, "purple": 49, "pink": 53, "rose": 56, "crimson": 57, "brown": 61, "gray": 2
+    },
+    "idle_channel": 1,
+    "playing_channel": 3,
+    "empty": 0
+  },
+  {
+    "name": "apc-mini",
+    "about": "Akai APC mini (first model): green, red or yellow, blinking while the tile plays",
+    "idle": {
+      "red": 3, "crimson": 3, "rose": 3, "pink": 3, "purple": 3, "indigo": 3,
+      "orange": 5, "yellow": 5, "brown": 5,
+      "lime": 1, "green": 1, "mint": 1, "teal": 1, "cyan": 1, "blue": 1, "gray": 1
+    },
+    "playing": {
+      "red": 4, "crimson": 4, "rose": 4, "pink": 4, "purple": 4, "indigo": 4,
+      "orange": 6, "yellow": 6, "brown": 6,
+      "lime": 2, "green": 2, "mint": 2, "teal": 2, "cyan": 2, "blue": 2, "gray": 2
+    },
+    "empty": 0
+  },
+  {
+    "name": "apc-mini-mk2",
+    "about": "Akai APC mini mk2 (velocity palette; channel 7 is full brightness, channel 10 pulses)",
+    "idle": {
+      "red": 5, "orange": 9, "yellow": 13, "lime": 17, "green": 21, "mint": 29, "teal": 33, "cyan": 37,
+      "blue": 41, "indigo": 45, "purple": 49, "pink": 53, "rose": 56, "crimson": 57, "brown": 61, "gray": 2
+    },
+    "idle_channel": 7,
+    "playing_channel": 10,
+    "empty": 0
+  }
+]

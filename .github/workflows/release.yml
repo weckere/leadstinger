@@ -69,10 +69,11 @@ jobs:
       - name: Tarball
         run: |
           name=leadstinger-${{ needs.version.outputs.version }}-linux-${{ matrix.arch }}
-          mkdir -p "$name/share/applications" "$name/share/icons/hicolor/scalable/apps" dist
+          mkdir -p "$name/share/applications" "$name/share/icons/hicolor/scalable/apps" "$name/share/mime/packages" dist
           install -Dm755 target/release/leadstinger target/release/leadstinger-cli -t "$name/bin"
           cp assets/linux/leadstinger.desktop "$name/share/applications/"
           cp assets/linux/leadstinger.svg "$name/share/icons/hicolor/scalable/apps/"
+          cp assets/linux/leadstinger-set.xml "$name/share/mime/packages/leadstinger.xml"
           cp LICENSE README.md ATTRIBUTION.md "$name/"
           tar -czf "dist/$name.tar.gz" "$name"
       - uses: actions/upload-artifact@v4

@@ -27,11 +27,13 @@ screens, graphics or fonts from films, series or games.
 | `src/model.rs`, `src/store.rs` | the library (sets, tiles) and saving it |
 | `src/logic.rs` | play-mode and cue rules, free of UI and audio |
 | `src/audio.rs`, `src/decode.rs` | the mixer, the output stream and decoding |
+| `src/waveform.rs` | the waveform editor's peak pyramid and zero-crossing snapping (no UI) |
 | `src/commands.rs` | the command registry: every action, its parameters and its kind |
 | `src/controller.rs` | runs commands against the library and the mixer |
 | `src/control.rs` | the control socket the CLI talks to |
 | `src/app.rs`, `src/app/` | the egui interface; `panel.rs` is the Panel theme |
-| `src/theme.rs` | colours and fonts; must match `docs/design/*tokens.json` |
+| `src/theme.rs` | colours and fonts; must match `docs/design/*tokens.json`; `theme/contrast.rs` checks WCAG AA |
+| `src/themes.rs` | user themes: the `.lstheme` format, `assets/themes` (the built-ins in it), the themes folder |
 | `src/brand.rs` | the app's names in one place |
 | `src/setfile.rs` | set files (`.lsset`): import and export of sets as one zip |
 | `src/starter.rs`, `src/demo.rs`, `src/wav.rs` | first-launch starter packs; the generated demo library |
@@ -48,16 +50,18 @@ libraries the README lists.
 
 - `nix develop -c cargo test` must pass, and `cargo build` and `cargo clippy` must have
   no warnings.
-- The source also builds a second brand, `--features sttnger`. Test it in its own
-  target folder so it doesn't replace your normal debug build:
-  `CARGO_TARGET_DIR=target/sttnger cargo test --features sttnger`. Before running the
-  app, check `./target/debug/leadstinger --version` says LeadStinger.
 - **Never run the app or the tests against your own library.** Use a scratch
   `LEADSTINGER_DATA_DIR`, and `LEADSTINGER_SILENT=1` when you don't need sound.
 - **UI changes** need a screenshot: run the app with `LEADSTINGER_SNAPSHOT=out.png`
   (plus `LEADSTINGER_SCRIPT`, `LEADSTINGER_WINDOW_SIZE`, `LEADSTINGER_DEMO=1`; see
   `leadstinger --help`) and look at the result, in both themes and at narrow widths down
   to 720 px.
+- **Stay out of the way of whoever is at the computer.** Set `LEADSTINGER_BACKGROUND=1`
+  for every run that isn't for a person to look at (a snapshot run sets it by itself):
+  on macOS the app then takes no focus, shows no Dock icon and its window can't be
+  seen, while screenshots, scripts and the CLI work as usual. Launch a bundle with
+  `open -g -n LeadStinger.app --env LEADSTINGER_BACKGROUND=1 …` (`-g` keeps it from
+  coming to the front).
 - **New actions** go in the command registry (`src/commands.rs`) and the Controller, so
   the menus, the CLI and agents all get them. Then regenerate the CLI reference:
   `cargo run --bin leadstinger-cli -- commands --markdown > docs/CLI.md` (a test fails

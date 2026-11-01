@@ -1,6 +1,6 @@
 use std::time::Duration;
 use leadstinger::brand::{self, APP_NAME, CLI_NAME, SLUG};
-use leadstinger::{app, audio, control, demo, starter, store, theme};
+use leadstinger::{app, audio, control, demo, quip, starter, store, theme};
 use eframe::egui;
 
 /// `--help`, with the environment variables under this brand's prefix.
@@ -10,8 +10,12 @@ fn help() -> String {
         "\
 {APP_NAME}: a live soundboard for macOS and Linux.
 
-USAGE: {SLUG} [--help] [--version]
+USAGE: {SLUG} [--help] [--version] [--register-links] [{SLUG}://quip?… | SET.lsset]
 Companion command-line tool: {CLI_NAME} (every command in the app, scriptable).
+A {SLUG}://quip link (from QuipClipper) is imported, by the running app if there is one;
+a set file is imported after the app asks.
+--register-links makes this program open those links and set files (Linux: for the
+AppImage or tarball); an AppImage also adds its launcher entry and icon.
 
 Environment:
   {:<24} library location (default: the per-user data directory)
@@ -19,41 +23,86 @@ Environment:
   {:<24} a starter pack to import on first launch (see starter/README.md)
   {:<24} don't open an audio device (playback is simulated)
   {:<24} save a PNG screenshot to this path, then quit
+  {:<24} dev runs: no focus, Dock icon or visible window
+  {:<24} (macOS); on with SNAPSHOT unless set to 0
   {:<24} initial window size in logical pixels, e.g. 940x800
   {:<24} startup UI steps, e.g. \"play:0,play:4,select:2,edit\"
   {:<24} draw the menu bar inside the window on macOS too
-  {:<24} Linux: open the window through X11/XWayland (file drops
-  {:<24} work) or native Wayland; overrides the Settings choice
+  {:<24} Linux: open the window through X11/XWayland (1) or native
+  {:<24} Wayland (0); overrides the Settings choice
+  {:<24} Check for Updates reads this saved GitHub answer
+  {:<24} instead of asking GitHub (testing)
 (Older prefixes still work: {}.)",
         e("DATA_DIR"),
         e("DEMO=1"),
         e("STARTER_DIR"),
         e("SILENT=1"),
         e("SNAPSHOT"),
+        e("BACKGROUND=1"),
+        "",
         e("WINDOW_SIZE"),
         e("SCRIPT"),
         e("IN_WINDOW_MENU=1"),
         e("X11=1|0"),
+        "",
+        e("UPDATE_JSON"),
         "",
         brand::ENV_PREFIXES[1..].iter().map(|p| format!("{p}_*")).collect::<Vec<_>>().join(", "),
     )
 }
 
 fn main() {
-    if let Some(arg) = std::env::args().nth(1) {
+    // A link, or a set file's absolute path, that the system opened us with.
+    let mut opened = None;
+    let arg = std::env::args().nth(1);
+    if let Some(path) = arg.as_deref().and_then(quip::opened_file) {
+        if !path.is_file() {
+            eprintln!("{SLUG}: no set file at {}", path.display());
+            std::process::exit(1);
+        }
+        let Some(path) = path.to_str() else {
+            eprintln!("{SLUG}: can't open {}: the path isn't valid UTF-8", path.display());
+            std::process::exit(1);
+        };
+        opened = Some(path.to_owned());
+    } else if let Some(arg) = arg.filter(|a| !quip::is_link(a)) {
         match arg.as_str() {
             "--version" | "-V" => println!("{} {}", brand::APP_NAME, env!("CARGO_PKG_VERSION")),
             "--help" | "-h" => println!("{}", help()),
+            "--register-links" => match quip::register_links() {
+                Ok(done) => println!("{done}"),
+                Err(e) => {
+                    eprintln!("{SLUG}: {e}");
+                    std::process::exit(1);
+                }
+            },
             other => {
                 eprintln!("{SLUG}: unknown argument {other:?}\n\n{}", help());
                 std::process::exit(2);
             }
         }
         return;
+    } else if let Some(arg) = std::env::args().nth(1) {
+        opened = Some(arg);
     }
 
     let data_dir = brand::data_dir();
     if control::app_running(&data_dir) {
+        if let Some(opened) = opened {
+            // Linux opens a link or a set file with another launch: hand it to the app
+            // (which asks before importing a set file) and go.
+            let (id, params) = quip::opened_command(&opened);
+            let sent = control::Client::connect(&data_dir)
+                .map_err(|e| e.to_string())
+                .and_then(|mut c| c.call(id, params).map_err(|e| e.message));
+            match sent {
+                Ok(_) => std::process::exit(0),
+                Err(e) => {
+                    eprintln!("{SLUG}: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
         eprintln!("{SLUG}: {APP_NAME} is already running with this library ({}).", data_dir.display());
         eprintln!("{SLUG}: use `{CLI_NAME}` to control it, or set {} for a separate library.", brand::env_name("DATA_DIR"));
         std::process::exit(0);
@@ -91,8 +140,18 @@ fn main() {
         audio::Engine::new(store.library.output_device.as_deref())
     };
 
+    // A link or set file that started the app is opened once the window is up; on
+    // macOS, they come as Apple Events, at start-up too.
+    if let Some(opened) = opened {
+        quip::deliver(opened);
+    }
+    #[cfg(target_os = "macos")]
+    quip::listen_for_links();
+
     let x11 = use_x11(store.library.use_x11);
-    #[allow(unused_mut)] // only Linux adjusts it
+    let mut opts = app::Options::from_env();
+    opts.x11 = x11;
+    #[allow(unused_mut)] // only Linux and macOS adjust it
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(app::APP_NAME)
@@ -100,6 +159,7 @@ fn main() {
             .with_inner_size(window_size())
             .with_min_inner_size(MIN_SIZE)
             .with_drag_and_drop(true)
+            .with_active(!opts.background)
             .with_icon(theme::app_icon()),
         ..Default::default()
     };
@@ -110,8 +170,10 @@ fn main() {
             b.with_x11();
         }));
     }
-    let mut opts = app::Options::from_env();
-    opts.x11 = x11;
+    #[cfg(target_os = "macos")]
+    if opts.background {
+        options.event_loop_builder = Some(Box::new(leadstinger::background::event_loop));
+    }
     if let Err(e) = eframe::run_native(
         app::APP_NAME,
         options,
@@ -123,7 +185,7 @@ fn main() {
 }
 
 /// The smallest window the layout is designed for.
-const MIN_SIZE: [f32; 2] = [720.0, 480.0];
+const MIN_SIZE: [f32; 2] = app::LAYOUT_MIN;
 
 /// The initial window size: `<PREFIX>_WINDOW_SIZE=WxH` (for screenshots at tiled widths),
 /// else 1280×800. Never below `MIN_SIZE`.

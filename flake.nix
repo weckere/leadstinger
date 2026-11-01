@@ -92,22 +92,27 @@
               fi
               exec ${pkg}/bin/leadstinger "$@"
             '';
-          # One build per brand: `pname` is also the launcher entry, icon and app id.
-          mkPackage = { pname, features ? [ ] }: pkgs.rustPlatform.buildRustPackage {
+          # `pname` is also the launcher entry, icon and app id.
+          mkPackage = { pname }: pkgs.rustPlatform.buildRustPackage {
             inherit pname;
             version = (lib.importTOML ./Cargo.toml).package.version;
             src = lib.cleanSource self;
             cargoLock.lockFile = ./Cargo.lock;
-            buildFeatures = features;
-            checkFeatures = features;
-            nativeBuildInputs = [ pkgs.pkg-config ] ++ lib.optional linux pkgs.makeWrapper;
+            # bindgenHook: libclang for signalsmith-stretch's bindings (pitch shift).
+            nativeBuildInputs = [ pkgs.pkg-config pkgs.rustPlatform.bindgenHook ] ++ lib.optional linux pkgs.makeWrapper;
             buildInputs = lib.optionals linux (linuxLibs pkgs);
             # A launcher entry and icon for rofi, wofi, walker, GNOME and KDE. The
             # window's app id (Wayland) and WM class (X11) are both the brand's slug, so
-            # the entry matches the running window.
+            # the entry matches the running window. The MIME type lets a double-click open .lsset
+            # set files.
             postInstall = lib.optionalString linux ''
               install -Dm644 assets/linux/${pname}.desktop $out/share/applications/${pname}.desktop
               install -Dm644 assets/linux/${pname}.svg $out/share/icons/hicolor/scalable/apps/${pname}.svg
+              install -Dm644 assets/linux/leadstinger-set.xml $out/share/mime/packages/${pname}.xml
+              # Fixed sizes too: 16 and 32 px are drawn simpler than the scalable icon.
+              for n in 16 32 64 128 256 512; do
+                install -Dm644 assets/icons/${pname}-$n.png $out/share/icons/hicolor/''${n}x''${n}/apps/${pname}.png
+              done
             '';
             # winit and glutin dlopen X11/Wayland/GL at runtime. wl-paste and xclip read
             # files copied in a file manager (paste to import).
@@ -118,36 +123,26 @@
             '';
             meta.mainProgram = "leadstinger";
           };
+          # ffmpeg on the PATH of both programs, after the user's own: importing AC-3,
+          # E-AC-3, DTS and video files converts them with it (src/transcode.rs, D-068).
+          # Only the Nix packages get it; the AppImages, the .app and the tarballs don't.
+          withFfmpeg = pkg: pkgs.symlinkJoin {
+            inherit (pkg) name;
+            paths = [ pkg ];
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+            postBuild = ''
+              for b in leadstinger leadstinger-cli; do
+                rm $out/bin/$b
+                makeWrapper ${pkg}/bin/$b $out/bin/$b --suffix PATH : ${lib.makeBinPath [ pkgs.ffmpeg-headless ]}
+              done
+            '';
+            meta.mainProgram = "leadstinger";
+          };
+          leadstinger = mkPackage { pname = "leadstinger"; };
         in
         {
           # LeadStinger, the public build (src/brand.rs).
-          default = mkPackage { pname = "leadstinger"; };
-
-          # The gift build's branding, ST:TNGer (`--features sttnger`, D-036). Same
-          # binaries; its launcher entry, icon and app id say sttnger.
-          sttnger = mkPackage { pname = "sttnger"; features = [ "sttnger" ]; };
-
-          # The gift edition with a private starter pack inside, never the default:
-          #   STTNGER_BUNDLE_GIFT=/path/to/pack nix build --impure .#with-gift
-          # The launcher points STTNGER_GIFT_DIR at the copy in share/sttnger/gift.
-          with-gift =
-            let dir = builtins.getEnv "STTNGER_BUNDLE_GIFT"; in
-            if dir == "" then pkgs.runCommand "sttnger-with-gift" { } ''
-              echo "with-gift: set STTNGER_BUNDLE_GIFT to the gift folder and pass --impure" >&2; exit 1
-            ''
-            else pkgs.symlinkJoin {
-              name = "sttnger-with-gift";
-              paths = [ self.packages.${stdenv.hostPlatform.system}.sttnger ];
-              nativeBuildInputs = [ pkgs.makeWrapper ];
-              postBuild = ''
-                mkdir -p $out/share/sttnger
-                cp -r ${builtins.path { path = dir; name = "sttnger-gift"; }} $out/share/sttnger/gift
-                rm $out/bin/leadstinger
-                makeWrapper ${self.packages.${stdenv.hostPlatform.system}.sttnger}/bin/leadstinger $out/bin/leadstinger \
-                  --set-default STTNGER_GIFT_DIR $out/share/sttnger/gift
-              '';
-              meta.mainProgram = "leadstinger";
-            };
+          default = withFfmpeg leadstinger;
         } // lib.optionalAttrs linux {
           # A launcher made to run from an AppImage (scripts/build-appimage.sh). The
           # AppImage replaces the host's /nix with its own, so NixOS's GL drivers and ALSA
@@ -155,10 +150,9 @@
           # ($APPIMAGE set) this launcher uses Mesa (llvmpipe if the GPU has no Mesa
           # driver), the PulseAudio ALSA plugin (PipeWire serves it too) and GTK's schemas
           # from the bundle. Only the pieces needed are copied, which keeps the AppImage
-          # free of Mesa's Vulkan drivers, LLVM's static libraries, Python and ffmpeg.
-          appimage = appimageLauncher { name = "leadstinger"; pkg = self.packages.${stdenv.hostPlatform.system}.default; };
-          # The same for the gift edition with its pack.
-          gift-appimage = appimageLauncher { name = "sttnger"; pkg = self.packages.${stdenv.hostPlatform.system}.with-gift; };
+          # free of Mesa's Vulkan drivers, LLVM's static libraries, Python and ffmpeg
+          # (the AppImages are built from the packages before ffmpeg is wrapped in).
+          appimage = appimageLauncher { name = "leadstinger"; pkg = leadstinger; };
         });
 
       # Headless show box: `services.leadstinger = { enable = true; user = "…"; };`
@@ -201,7 +195,8 @@
         let linux = pkgs.stdenv.hostPlatform.isLinux; in
         {
           default = pkgs.mkShell ({
-            packages = with pkgs; [ cargo rustc clippy rustfmt rust-analyzer pkg-config ]
+            # ffmpeg-headless: the import tests convert AC-3 and video files with it.
+            packages = with pkgs; [ cargo rustc clippy rustfmt rust-analyzer pkg-config rustPlatform.bindgenHook ffmpeg-headless ]
               ++ pkgs.lib.optionals linux (linuxLibs pkgs ++ [ pkgs.xvfb-run pkgs.mesa ]);
           } // pkgs.lib.optionalAttrs linux {
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (linuxLibs pkgs);

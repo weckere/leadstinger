@@ -22,7 +22,7 @@ in
       type = lib.types.package;
       default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
       defaultText = lib.literalExpression "leadstinger.packages.\${system}.default";
-      description = "The LeadStinger package (provides leadstinger and leadstinger-cli; `.sttnger` for the ST:TNGer branding).";
+      description = "The LeadStinger package (provides leadstinger and leadstinger-cli).";
     };
 
     user = lib.mkOption {
@@ -67,10 +67,8 @@ in
       after = [ "pipewire.service" "pipewire-pulse.service" "wireplumber.service" ];
       wants = [ "pipewire.service" ];
       unitConfig.ConditionUser = cfg.user;
-      # Both prefixes, for either branding (src/brand.rs).
       environment = lib.optionalAttrs (cfg.dataDir != null) {
         LEADSTINGER_DATA_DIR = cfg.dataDir;
-        STTNGER_DATA_DIR = cfg.dataDir;
       };
       serviceConfig = {
         ExecStart = lib.escapeShellArgs ([ "${cfg.package}/bin/leadstinger-cli" "serve" ] ++ args);

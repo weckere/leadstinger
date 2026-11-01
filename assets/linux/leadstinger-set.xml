@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- shared-mime-info: LeadStinger set files (src/setfile.rs). Installed as
+     share/mime/packages/<slug>.xml by the Nix package and by the register-links option (no double
+     hyphens in an XML comment: shared-mime-info rejects the whole file). -->
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-leadstinger-set">
+    <comment>LeadStinger set</comment>
+    <sub-class-of type="application/zip"/>
+    <glob pattern="*.lsset"/>
+  </mime-type>
+</mime-info>

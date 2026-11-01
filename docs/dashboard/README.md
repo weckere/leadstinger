@@ -5,7 +5,9 @@ They coordinated on a **project board**: one web page holding the milestones, ta
 decisions, history, agents, blockers and metrics. It is a claude.ai artifact backed by a
 small shared database. People watch the page update live, and agents read and write the
 same rows with Claude Code's `ArtifactData` tool. [PROJECT.md](../PROJECT.md) is a
-snapshot of LeadStinger's board taken for the release.
+snapshot of LeadStinger's board taken for the release. (In October 2026 LeadStinger moved
+its own board to markdown cards kept in a separate notes repository, which agents edit
+through one script; this template is the artifact version it started with.)
 
 This folder is that board as a template you can reuse:
 

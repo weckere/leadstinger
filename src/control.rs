@@ -16,7 +16,8 @@
 //! auto-advance and the event stream going meanwhile.
 //!
 //! Access control is the file system: the socket is 0600 in the user's data dir (or
-//! their private runtime dir). There is no network listener.
+//! their private runtime dir). It has no network listener; the only one in the app is
+//! OSC (osc.rs), off by default and on localhost unless turned on for the network.
 
 use crate::controller::{CmdError, Controller};
 use serde_json::{json, Value};
@@ -285,7 +286,8 @@ fn decode_reply(line: &str) -> Result<Value, CmdError> {
 const CODES: &[&str] = &[
     "failed",
     "bad_params", "not_found", "ambiguous", "unknown_command", "loading", "no_audio", "end_of_cues", "nothing_to_paste",
-    "decode_failed", "not_playing", "last_set", "device_failed", "bad_request", "io", "no_window",
+    "decode_failed", "not_playing", "last_set", "device_failed", "bad_request", "io", "no_window", "not_connected",
+    "preview_unavailable",
 ];
 
 #[cfg(test)]
@@ -341,6 +343,47 @@ mod tests {
         let sock = server.path().to_owned();
         drop(server);
         assert!(!sock.exists());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_microphone_prompt_doesnt_hold_up_commands() {
+        use crate::controller::INPUT_WAITING;
+        use crate::input::Input;
+        use std::time::Instant;
+        let dir = short_temp("mic");
+        let mut c = Controller::new(Store::open(dir.clone()).unwrap(), Engine::disabled("test"));
+        // Like macOS with its microphone prompt up: the open waits until it's answered.
+        let (answer, prompt) = std::sync::mpsc::channel::<()>();
+        let prompt = Mutex::new(prompt);
+        c.input_opener = Arc::new(move |device, voice| {
+            prompt.lock().unwrap().recv().ok();
+            Ok(Input::fake("Fake Mic", device, voice))
+        });
+        // The input only opens alongside an output.
+        c.engine.device_name = Some("Fake Speakers".into());
+        let lender = Lender::new(c);
+        let server = serve(lender.clone(), &dir, None).unwrap();
+        let mut cli = Client::connect(&dir).unwrap();
+        let mut quick = |command: &str, params: Value| {
+            let t = Instant::now();
+            let r = cli.call(command, params).unwrap();
+            assert!(t.elapsed() < Duration::from_secs(1), "{command} took {:?}", t.elapsed());
+            r
+        };
+        assert_eq!(quick("duck.voice", json!({"on": true}))["waiting"], true);
+        assert_eq!(quick("status", json!({}))["input_note"], INPUT_WAITING);
+        quick("set.create", json!({"name": "While asking"}));
+        assert_eq!(quick("input.list", json!({}))["waiting"], true);
+        // Allowed: the open finishes and the ticker hands the input over.
+        answer.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while quick("input.list", json!({}))["current"] != "Fake Mic" {
+            assert!(Instant::now() < deadline, "the input never arrived");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(quick("status", json!({}))["input_note"], Value::Null);
+        drop(server);
         std::fs::remove_dir_all(dir).ok();
     }
 

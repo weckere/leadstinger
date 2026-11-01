@@ -1,7 +1,7 @@
 //! `LEADSTINGER_DEMO=1`: fill an empty library with synthesized sounds, for trying the
 //! app out and for screenshots.
 
-use crate::model::{Layout, PlayMode, SoundSet, TileColor};
+use crate::model::{Layout, PlayMode, PressOptions, SoundSet, TileColor};
 use crate::store::Store;
 use crate::wav;
 
@@ -55,15 +55,17 @@ fn build_set(store: &mut Store, name: &str, sounds: &[Sound], layout: Layout, co
     let set = SoundSet { layout, columns, ..SoundSet::named(name) };
     store.library.sets.push(set);
     let si = store.library.sets.len() - 1;
-    let (ids, _) = store.import(&paths, si, None);
+    let (ids, _) = store.import(&paths, si, crate::rows::Place::Append);
     for (id, snd) in ids.iter().zip(sounds) {
         if let Some(t) = store.library.tile_mut(*id) {
             t.color = snd.color;
-            t.mode = snd.mode;
+            t.press = PressOptions::from_mode(snd.mode);
             t.looping = snd.looping;
-            t.fade_out = if snd.looping { 1.5 } else { 0.0 };
+            t.stop_fade = if snd.looping { 1.5 } else { 0.0 };
         }
     }
+    // The files are copied in the background; let that finish before they go.
+    store.finish_imports();
     std::fs::remove_dir_all(tmp).ok();
     Ok(())
 }
@@ -79,4 +81,31 @@ pub fn populate_if_empty(store: &mut Store) -> anyhow::Result<()> {
     store.library.selected_set = Some(store.library.sets[0].id);
     store.mark_dirty();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::Media;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn every_demo_tile_decodes() {
+        let dir = std::env::temp_dir().join(format!("sb-demo-{}", uuid::Uuid::new_v4()));
+        let mut store = Store::open(dir.clone()).unwrap();
+        populate_if_empty(&mut store).unwrap();
+        // The tones are written to a temporary folder, removed once they're copied in.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while store.is_loading() && Instant::now() < deadline {
+            store.poll();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let tiles: Vec<_> = store.library.sets.iter().flat_map(|s| &s.tiles).collect();
+        assert_eq!(tiles.len(), SHOW.len() + CUES.len());
+        for t in tiles {
+            assert!(matches!(store.media(t), Some(Media::Ready { .. })), "“{}” didn't decode", t.title);
+        }
+        drop(store);
+        std::fs::remove_dir_all(dir).ok();
+    }
 }

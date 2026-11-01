@@ -47,7 +47,7 @@ const REFUSED: u8 = 5;
 /// Parameters that are always text, even when they look like a number ("1984").
 const TEXT_KEYS: &[&str] = &[
     "tile", "set", "name", "title", "path", "query", "text", "hotkey", "layout", "theme", "appearance", "color", "mode",
-    "event", "pictureLayer", "pictureFit",
+    "event", "pictureLayer", "pictureFit", "folder", "format", "url", "token", "link",
 ];
 
 struct Opts {
@@ -167,7 +167,7 @@ fn remote_command(opts: &mut Opts, local: Vec<String>) -> Result<Vec<String>, Fa
     }
     let raw = std::env::var("SSH_ORIGINAL_COMMAND").unwrap_or_default();
     let mut words = split_words(&raw).map_err(Fail::usage)?;
-    if words.first().is_some_and(|w| w == CLI_NAME || w == "sttnger-cli") {
+    if words.first().is_some_and(|w| w == CLI_NAME) {
         words.remove(0);
     }
     let mut out = Vec::new();
@@ -333,6 +333,16 @@ fn typed(key: &str, raw: &str) -> Value {
     Value::String(raw.to_owned())
 }
 
+/// The parameters that name files or folders on this machine. A QuipClipper command's
+/// `folder` is a folder in that server's clips library, sent as it is.
+fn local_paths(spec: &Spec) -> &'static [&'static str] {
+    if spec.id.starts_with("quip.") {
+        &["path", "paths"]
+    } else {
+        &["path", "paths", "folder"]
+    }
+}
+
 /// Turn `<command> [main…] [--k v]…` into an id and a parameter object.
 fn parse(args: &[String]) -> Result<(&'static Spec, Value), Fail> {
     let name = alias(&args[0]);
@@ -391,9 +401,17 @@ fn parse(args: &[String]) -> Result<(&'static Spec, Value), Fail> {
         };
         params.insert(main.to_owned(), v);
     }
+    // `quip.connect --token -`: off the command line, where other users' `ps` would show it.
+    if spec.id == "quip.connect" && params.get("token").and_then(Value::as_str) == Some("-") {
+        let mut token = String::new();
+        std::io::stdin().read_line(&mut token).map_err(|e| Fail::usage(format!("reading the token from stdin: {e}")))?;
+        params.insert("token".into(), json!(token.trim()));
+    }
     // Paths are relative to the caller, not to the app.
-    if let Some(Value::String(p)) = params.get("path") {
-        params.insert("path".into(), json!(absolute(p)));
+    for &key in local_paths(spec).iter().filter(|k| **k != "paths") {
+        if let Some(Value::String(p)) = params.get(key) {
+            params.insert(key.into(), json!(absolute(p)));
+        }
     }
     match params.get("paths") {
         Some(Value::String(p)) => {
@@ -419,8 +437,11 @@ fn check_safe(opts: &Opts, spec: &Spec, params: &Value) -> Result<(), Fail> {
     if spec.id == "app.quit" {
         return Err(Fail::new(REFUSED, "refused", "--safe doesn't quit the app; ask whoever is at it"));
     }
+    if matches!(spec.id, "quip.connect" | "quip.disconnect" | "quip.pair") {
+        return Err(Fail::new(REFUSED, "refused", "--safe doesn't change which QuipClipper servers are trusted; ask the user"));
+    }
     let mut paths: Vec<&str> = Vec::new();
-    for key in ["path", "paths"] {
+    for &key in local_paths(spec) {
         match params.get(key) {
             Some(Value::String(s)) => paths.push(s),
             Some(Value::Array(a)) => paths.extend(a.iter().filter_map(Value::as_str)),
@@ -466,7 +487,102 @@ impl Target {
         Ok(Target::Library { ctl: Box::new(ctl), _lock: lock })
     }
 
+    /// Run a command; a render (`tile.render`, `set.render`) is waited for, with its
+    /// progress on a terminal, and gives what it wrote.
     fn call(&mut self, spec: &Spec, params: Value) -> Result<Value, Fail> {
+        let started = self.call_once(spec, params)?;
+        match (spec.id, started["job"].as_u64()) {
+            ("tile.render" | "set.render", Some(job)) => self.wait_render(job, started),
+            ("quip.pair", _) if matches!(started["status"].as_str(), Some("starting" | "waiting")) => self.wait_pair(started),
+            ("quip.discover", _) if started["looking"] == json!(true) => self.wait_discover(),
+            ("app.checkForUpdates", _) => self.wait_updates(started),
+            _ => Ok(started),
+        }
+    }
+
+    /// Check for Updates answers at once; wait for GitHub's answer. A failed check fails
+    /// the command.
+    fn wait_updates(&mut self, mut v: Value) -> Result<Value, Fail> {
+        let check = spec("app.checkForUpdates").expect("registered");
+        while v["checking"] == json!(true) {
+            std::thread::sleep(Duration::from_millis(100));
+            v = self.call_once(check, json!({"again": false}))?;
+        }
+        match v["status"].as_str() {
+            Some("failed") => Err(Fail::new(FAILED, "failed", format!("Couldn't check for updates: {}", v["error"].as_str().unwrap_or("unknown error")))),
+            _ => Ok(v),
+        }
+    }
+
+    /// `quip.pair`: show the code QuipClipper shows too, and wait for Allow or Deny there.
+    fn wait_pair(&mut self, started: Value) -> Result<Value, Fail> {
+        let pairing = spec("quip.pairing").expect("registered");
+        let server = started["server"].clone();
+        let mut shown = false;
+        loop {
+            let v = self.call_once(pairing, json!({"url": server}))?;
+            let p = v.get(0).cloned().unwrap_or_else(|| json!({"status": "cancelled"}));
+            match p["status"].as_str() {
+                Some("waiting") if !shown => {
+                    eprintln!(
+                        "Allow {APP_NAME} in QuipClipper ({}): it shows a request with the code {}",
+                        p["approve_url"].as_str().unwrap_or_default(),
+                        p["code"].as_str().unwrap_or_default()
+                    );
+                    shown = true;
+                }
+                Some("starting" | "waiting") => {}
+                Some("connected") => return Ok(p),
+                status => {
+                    let code = if status == Some("denied") { "denied" } else if status == Some("expired") { "expired" } else { "failed" };
+                    return Err(Fail::new(FAILED, code, p["message"].as_str().unwrap_or("The pairing didn't finish").to_owned()));
+                }
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+    }
+
+    /// `quip.discover`: wait the few seconds a look takes.
+    fn wait_discover(&mut self) -> Result<Value, Fail> {
+        let discover = spec("quip.discover").expect("registered");
+        loop {
+            std::thread::sleep(Duration::from_millis(250));
+            let v = self.call_once(discover, json!({"again": false}))?;
+            if v["looking"] != json!(true) {
+                return Ok(v);
+            }
+        }
+    }
+
+    fn wait_render(&mut self, job: u64, started: Value) -> Result<Value, Fail> {
+        let status = spec("render.status").expect("registered");
+        let tty = std::io::stderr().is_terminal();
+        let r = loop {
+            let v = self.call_once(status, json!({"job": job}))?;
+            let r = v["renders"][0].clone();
+            if r["finished"].as_bool() != Some(false) {
+                break r;
+            }
+            if tty {
+                let pct = r["fraction"].as_f64().unwrap_or(0.0) * 100.0;
+                eprint!("\r\x1b[2KExporting {} {pct:.0}%", r["current"].as_str().unwrap_or_default());
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        if tty {
+            eprint!("\r\x1b[2K");
+        }
+        let errors: Vec<&str> = r["errors"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+        if !errors.is_empty() {
+            return Err(Fail::new(FAILED, "failed", format!("Couldn't export {}", errors.join("; "))));
+        }
+        if r["cancelled"] == json!(true) {
+            return Err(Fail::new(FAILED, "cancelled", "The export was cancelled"));
+        }
+        Ok(json!({"job": job, "format": started["format"], "files": r["written"], "skipped": started["skipped"]}))
+    }
+
+    fn call_once(&mut self, spec: &Spec, params: Value) -> Result<Value, Fail> {
         match self {
             Target::App(c) => c.call(spec.id, params).map_err(Fail::from_cmd),
             Target::Library { ctl, .. } => {
@@ -475,6 +591,8 @@ impl Target {
                 }
                 let r = ctl.execute(spec.id, params).map_err(Fail::from_cmd);
                 ctl.effects.clear();
+                // Files added are copied (or converted) in the background: finish first.
+                ctl.store.finish_imports();
                 if ctl.store.has_unsaved() {
                     ctl.store.save_now().map_err(|e| Fail::new(FAILED, "failed", format!("couldn't save the library: {e:#}")))?;
                 }
@@ -502,8 +620,23 @@ fn print_result(opts: &Opts, id: &str, v: &Value) {
         "status" => print_status(v),
         "tile.list" => print_tiles(v),
         "set.list" => print_sets(v),
+        "app.checkForUpdates" => print_update(v),
         _ if v.as_object().is_some_and(|m| m.is_empty()) => {}
         _ => println!("{}", serde_json::to_string_pretty(v).unwrap_or_default()),
+    }
+}
+
+fn print_update(v: &Value) {
+    let current = v["current"].as_str().unwrap_or("?");
+    match v["status"].as_str() {
+        Some("newer") => {
+            println!("{APP_NAME} {} is out (you have {current}).", v["latest"].as_str().unwrap_or("?"));
+            println!("Download it from {}", v["url"].as_str().unwrap_or("?"));
+            if let Some(notes) = v["notes"].as_str().filter(|n| !n.is_empty()) {
+                println!("\n{notes}");
+            }
+        }
+        _ => println!("You have the latest version ({current})."),
     }
 }
 
@@ -533,7 +666,7 @@ fn print_status(v: &Value) {
         println!("Next cue: #{} {}", n["position"], n["title"].as_str().unwrap_or(""));
     }
     let dev = v["device"].as_str().or(v["device_error"].as_str()).unwrap_or("no output");
-    println!("Output: {dev}{}", if v["edit_mode"] == true { "  ·  Edit mode" } else { "" });
+    println!("Output: {dev}{}", if v["locked"] == true { "  ·  set locked" } else { "" });
 }
 
 fn print_tiles(v: &Value) {
@@ -554,13 +687,19 @@ fn print_tiles(v: &Value) {
             Some("stopped") | None => "",
             Some(s) => s,
         };
+        // The pad options that are on (D-145).
+        let options: Vec<&str> = [("loop", "loop"), ("solo", "solo"), ("pausable", "pausable"), ("one_shot", "one-shot"), ("hold", "hold"), ("disabled", "disabled")]
+            .into_iter()
+            .filter(|(k, _)| t[*k] == true)
+            .map(|(_, word)| word)
+            .collect();
         println!(
-            "  #{:<3} {:<3} {:<width$}  {:>7}  {:<8} {}",
+            "  #{:<3} {:<3} {:<width$}  {:>7}  {:<14} {}",
             t["position"],
             t["key"].as_str().map(|k| k.to_uppercase()).unwrap_or_else(|| "–".into()),
             t["title"].as_str().unwrap_or(""),
             clock(&t["duration"]),
-            t["mode"].as_str().unwrap_or(""),
+            options.join(" "),
             state
         );
     }
@@ -764,14 +903,18 @@ fn serve(opts: &Opts, args: &[String]) -> Result<(), Fail> {
     let mut ctl = Controller::new(store, engine);
     ctl.has_window = false;
     let lender = control::Lender::new(ctl);
-    let server = control::serve(lender.clone(), dir, None)
-        .map_err(|e| Fail::new(FAILED, "failed", format!("can't listen on the control socket: {e}")))?;
-    eprintln!("{CLI_NAME}: serving {} on {}", dir.display(), server.path().display());
-
+    // Before the socket answers: a SIGTERM from then on (MIDI can take a while to start)
+    // must still save and exit cleanly.
     let stop = Arc::new(AtomicBool::new(false));
     for sig in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT, signal_hook::consts::SIGHUP] {
         signal_hook::flag::register(sig, stop.clone()).map_err(|e| Fail::new(FAILED, "failed", e.to_string()))?;
     }
+    let server = control::serve(lender.clone(), dir, None)
+        .map_err(|e| Fail::new(FAILED, "failed", format!("can't listen on the control socket: {e}")))?;
+    eprintln!("{CLI_NAME}: serving {} on {}", dir.display(), server.path().display());
+    leadstinger::midi::start(lender.clone(), None);
+    leadstinger::osc::start(lender.clone(), None);
+
     let mut last_notice = None;
     loop {
         std::thread::sleep(Duration::from_millis(50));
@@ -796,14 +939,20 @@ fn serve(opts: &Opts, args: &[String]) -> Result<(), Fail> {
         }
     }
     eprintln!("{CLI_NAME}: stopping");
-    lender.with(|c| c.store.save_now()).map_err(|e| Fail::new(FAILED, "failed", format!("couldn't save the library: {e:#}")))?;
+    // Other threads still hold the controller, so the store isn't dropped: stop ffmpeg here.
+    lender.with(|c| {
+        c.store.stop_imports();
+        c.store.save_now()
+    })
+    .map_err(|e| Fail::new(FAILED, "failed", format!("couldn't save the library: {e:#}")))?;
     drop(server);
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::split_words;
+    use super::{alias, check_safe, parse, spec, split_words, Opts};
+    use serde_json::json;
 
     #[test]
     fn splits_like_a_shell_without_expanding() {
@@ -814,5 +963,115 @@ mod tests {
         assert_eq!(w("status; rm -rf ~ $(id)"), ["status;", "rm", "-rf", "~", "$(id)"]);
         assert_eq!(w(r#"x '' """#), ["x", "", ""]);
         assert!(split_words("play 'oops").is_err());
+    }
+
+    /// A QuipClipper `--folder` is a folder in its clips library: sent as given, and not
+    /// checked against `--allow-dir`. A local `--folder` is still made absolute.
+    #[test]
+    fn quip_folders_stay_library_paths() {
+        let parsed = |a: &[&str]| parse(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>()).unwrap_or_else(|f| panic!("{}", f.error.message));
+        let (s, p) = parsed(&["quip.browse", "Heat (1995)"]);
+        assert_eq!(p, json!({"folder": "Heat (1995)"}));
+        let safe = Opts { ssh: false, json: true, offline: true, safe: true, keep_going: false, data_dir: "data".into(), allow_dirs: vec![] };
+        assert!(check_safe(&safe, s, &p).is_ok());
+        let (s, p) = parsed(&["quip.search", "heat", "--folder", "Movies/Heat (1995)"]);
+        assert_eq!(p["folder"], "Movies/Heat (1995)");
+        assert!(check_safe(&safe, s, &p).is_ok());
+        let (s, p) = parsed(&["set.render", "--folder", "sounds"]);
+        let folder = p["folder"].as_str().unwrap();
+        assert!(std::path::Path::new(folder).is_absolute() && folder.ends_with("sounds"), "{folder}");
+        assert!(check_safe(&safe, s, &p).is_err());
+    }
+
+    /// The `leadstinger-cli …` lines in code blocks and code spans of a Markdown file,
+    /// each cut where the shell would end it (a comment, `;`, a pipe, a redirect, or the
+    /// quote of a keybind config or authorized_keys line around it), with its line number.
+    fn examples(markdown: &str) -> Vec<(usize, String)> {
+        let mut out = Vec::new();
+        let mut fenced = false;
+        for (n, line) in markdown.lines().enumerate() {
+            if line.trim_start().starts_with("```") {
+                fenced = !fenced;
+                continue;
+            }
+            let code: Vec<&str> = if fenced { vec![line] } else { line.split('`').skip(1).step_by(2).collect() };
+            for text in code {
+                for (at, _) in text.match_indices("leadstinger-cli ") {
+                    // `cargo run --bin leadstinger-cli -- …` is cargo's command line.
+                    if text[..at].ends_with("--bin ") {
+                        continue;
+                    }
+                    let rest = &text[at + "leadstinger-cli ".len()..];
+                    let end = [" #", "; ", " | ", " < ", "\")", "')", "\","].iter().filter_map(|stop| rest.find(stop)).min().unwrap_or(rest.len());
+                    out.push((n + 1, rest[..end].trim().to_owned()));
+                }
+            }
+        }
+        out
+    }
+
+    /// Every CLI example in the docs parses: the command exists, it gets at most one main
+    /// argument, and each `--option` is one of its parameters (`leadstinger-cli help`).
+    #[test]
+    fn doc_examples_parse() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files: Vec<_> = ["README.md", "CHANGELOG.md", "AGENTS.md", "skills/leadstinger/SKILL.md", "starter/README.md"].iter().map(|f| root.join(f)).collect();
+        for dir in ["docs", "examples"] {
+            let mut docs: Vec<_> = std::fs::read_dir(root.join(dir)).unwrap().map(|e| e.unwrap().path()).collect();
+            docs.sort();
+            for p in docs {
+                if p.is_dir() {
+                    files.push(p.join("README.md"));
+                } else if p.extension().is_some_and(|e| e == "md") {
+                    files.push(p);
+                }
+            }
+        }
+        files.retain(|f| f.exists());
+        let (mut checked, mut wrong) = (0, Vec::new());
+        for file in &files {
+            let name = file.strip_prefix(root).unwrap().display().to_string();
+            for (line, example) in examples(&std::fs::read_to_string(file).unwrap()) {
+                let mut words = split_words(&example).unwrap_or_else(|e| panic!("{name}:{line}: {example}: {e}"));
+                // Global options, which main() takes out before parsing.
+                let mut i = 0;
+                while i < words.len() {
+                    match words[i].as_str() {
+                        "--json" | "--offline" | "--safe" | "--keep-going" | "--ssh" => drop(words.remove(i)),
+                        "--data-dir" | "--allow-dir" => drop(words.drain(i..(i + 2).min(words.len()))),
+                        _ => i += 1,
+                    }
+                }
+                // Usage lines such as `help <command>` are templates, not examples, and
+                // `ln -s …/leadstinger-cli ~/.local/bin/` names a folder, not a command.
+                if words.is_empty() || words[0].contains('/') || words.iter().any(|w| w.starts_with(['<', '['])) {
+                    continue;
+                }
+                checked += 1;
+                let problem = match words[0].as_str() {
+                    "commands" | "run" | "watch" | "serve" => None,
+                    "help" => words.get(1).filter(|c| spec(alias(c)).is_none()).map(|c| format!("no command {c:?}")),
+                    _ => {
+                        // `--token -` reads stdin; the test has none to give.
+                        if let Some(token) = words.iter().position(|w| w == "--token").and_then(|t| words.get_mut(t + 1)) {
+                            *token = "x".into();
+                        }
+                        match parse(&words) {
+                            Err(f) => Some(f.error.message),
+                            Ok((s, _)) => {
+                                let known = |key: &str| s.params.split(|c: char| !c.is_alphanumeric()).any(|w| w == key);
+                                let unknown: Vec<String> = words.iter().filter_map(|w| w.strip_prefix("--")).map(|k| super::camel(k.split('=').next().unwrap())).filter(|k| k != "params" && !known(k)).collect();
+                                (!unknown.is_empty()).then(|| format!("{} has no parameter {}", s.id, unknown.join(", ")))
+                            }
+                        }
+                    }
+                };
+                if let Some(p) = problem {
+                    wrong.push(format!("{name}:{line}: leadstinger-cli {example}\n    {p}"));
+                }
+            }
+        }
+        assert!(checked > 100, "found only {checked} examples: is the extraction broken?");
+        assert!(wrong.is_empty(), "CLI examples in the docs that the CLI refuses:\n{}", wrong.join("\n"));
     }
 }

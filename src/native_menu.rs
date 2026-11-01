@@ -1,7 +1,10 @@
 //! The native macOS menu bar, built with `muda` from the shared menu model.
 //!
-//! The menu structure is built once. Check marks and enabled states are synced from
-//! `menu::State` whenever it changes. Clicks and key equivalents arrive as
+//! The menu structure is built once. Check marks, enabled states and the items whose
+//! command changes with the state (Record New Tile ↔ Stop Recording, found again by their
+//! slot in the model) are synced from `menu::State` whenever it changes, and View ▸ Theme
+//! is rebuilt when the installed themes change (an import, a removal, a renamed theme).
+//! `menu::shape` must not depend on the state; a test there holds it to that (D-124). Clicks and key equivalents arrive as
 //! `MenuEvent`s, which are mapped back to registry commands ([`Cmd`]); the handler also wakes egui, so a
 //! menu works even while the app is idle.
 
@@ -10,7 +13,7 @@ use crate::menu::{self, Entry, State};
 use eframe::egui::{self, Key, KeyboardShortcut};
 use muda::accelerator::{Accelerator, Code, Modifiers};
 use muda::{AboutMetadata, CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::Mutex;
 
@@ -18,9 +21,20 @@ pub struct NativeMenu {
     _menu: Menu,
     commands: HashMap<MenuId, Cmd>,
     checks: Vec<(Cmd, CheckMenuItem)>,
-    items: Vec<(Cmd, MenuItem)>,
+    /// Plain items by their slot (`menu::slots`), with the command and label they show.
+    items: Vec<Slot>,
+    /// View ▸ Theme and its slot, and the installed themes it lists.
+    themes: Option<(Submenu, Vec<usize>)>,
+    listed: Vec<(String, String)>,
     events: Receiver<MenuId>,
     last: Option<State>,
+}
+
+struct Slot {
+    at: Vec<usize>,
+    cmd: Cmd,
+    label: &'static str,
+    item: MenuItem,
 }
 
 fn code(key: Key) -> Option<Code> {
@@ -32,6 +46,9 @@ fn code(key: Key) -> Option<Code> {
         Key::Q => Code::KeyQ,
         Key::Num1 => Code::Digit1,
         Key::Num2 => Code::Digit2,
+        Key::Num0 => Code::Digit0,
+        Key::Equals => Code::Equal,
+        Key::Minus => Code::Minus,
         Key::Comma => Code::Comma,
         Key::Period => Code::Period,
         Key::ArrowUp => Code::ArrowUp,
@@ -77,7 +94,7 @@ impl NativeMenu {
             repaint.request_repaint();
         }));
 
-        let mut this = NativeMenu { _menu: Menu::new(), commands: HashMap::new(), checks: Vec::new(), items: Vec::new(), events, last: None };
+        let mut this = NativeMenu { _menu: Menu::new(), commands: HashMap::new(), checks: Vec::new(), items: Vec::new(), themes: None, listed: state.user_themes.clone(), events, last: None };
         let bar = Menu::new();
         let model = menu::menus(state, true);
         for (i, m) in model.iter().enumerate() {
@@ -93,7 +110,7 @@ impl NativeMenu {
                 };
                 let _ = sub.append(&PredefinedMenuItem::about(Some(&format!("About {}", crate::app::APP_NAME)), Some(about)));
                 let _ = sub.append(&PredefinedMenuItem::separator());
-                for e in &m.entries {
+                for (n, e) in m.entries.iter().enumerate() {
                     if let Entry::Item(it) = e {
                         if it.cmd.id == "app.quit" {
                             let _ = sub.append(&PredefinedMenuItem::services(None));
@@ -104,11 +121,11 @@ impl NativeMenu {
                             let _ = sub.append(&PredefinedMenuItem::separator());
                         }
                     }
-                    this.append_entry(&sub, e);
+                    this.append_entry(&sub, e, vec![i, n]);
                 }
             } else {
-                for e in &m.entries {
-                    this.append_entry(&sub, e);
+                for (n, e) in m.entries.iter().enumerate() {
+                    this.append_entry(&sub, e, vec![i, n]);
                 }
                 if m.title == "View" {
                     let _ = sub.append(&PredefinedMenuItem::separator());
@@ -130,21 +147,25 @@ impl NativeMenu {
         }
         bar.init_for_nsapp();
         this._menu = bar;
-        this.last = Some(*state);
+        this.last = Some(state.clone());
         this
     }
 
-    fn append_entry(&mut self, parent: &Submenu, e: &Entry) {
+    /// Add `e`, which sits at slot `at` in the model.
+    fn append_entry(&mut self, parent: &Submenu, e: &Entry, at: Vec<usize>) {
         match e {
             Entry::Separator => {
                 let _ = parent.append(&PredefinedMenuItem::separator());
             }
             Entry::Submenu(label, entries) => {
                 let sub = Submenu::new(*label, true);
-                for e in entries {
-                    self.append_entry(&sub, e);
+                for (n, e) in entries.iter().enumerate() {
+                    self.append_entry(&sub, e, [&at[..], &[n]].concat());
                 }
                 let _ = parent.append(&sub);
+                if *label == "Theme" {
+                    self.themes = Some((sub, at));
+                }
             }
             Entry::Item(it) => {
                 let accel = accelerator(it.shortcut);
@@ -159,20 +180,24 @@ impl NativeMenu {
                         let m = MenuItem::new(it.label, it.enabled, accel);
                         self.commands.insert(m.id().clone(), it.cmd);
                         let _ = parent.append(&m);
-                        self.items.push((it.cmd, m));
+                        self.items.push(Slot { at, cmd: it.cmd, label: it.label, item: m });
                     }
                 }
             }
         }
     }
 
-    /// Bring check marks and enabled states up to date with `state`.
+    /// Bring check marks, enabled states and swapped items up to date with `state`.
     pub fn sync(&mut self, state: &State) {
         if self.last.as_ref() == Some(state) {
             return;
         }
-        self.last = Some(*state);
         let model = menu::menus(state, true);
+        if self.listed != state.user_themes {
+            self.listed = state.user_themes.clone();
+            self.rebuild_themes(&model);
+        }
+        self.last = Some(state.clone());
         let mut flat: HashMap<Cmd, (Option<bool>, bool)> = HashMap::new();
         fn walk(entries: &[Entry], out: &mut HashMap<Cmd, (Option<bool>, bool)>) {
             for e in entries {
@@ -194,10 +219,37 @@ impl NativeMenu {
                 item.set_enabled(*enabled);
             }
         }
-        for (cmd, item) in &self.items {
-            if let Some((_, enabled)) = flat.get(cmd) {
-                item.set_enabled(*enabled);
+        let slots: HashMap<Vec<usize>, &menu::Item> = menu::slots(&model).into_iter().collect();
+        for slot in &mut self.items {
+            let Some(i) = slots.get(&slot.at) else { continue };
+            if (i.cmd, i.label) != (slot.cmd, slot.label) {
+                slot.item.set_text(i.label);
+                let _ = slot.item.set_accelerator(accelerator(i.shortcut));
+                self.commands.insert(slot.item.id().clone(), i.cmd);
+                (slot.cmd, slot.label) = (i.cmd, i.label);
             }
+            slot.item.set_enabled(i.enabled);
+        }
+    }
+
+    /// Fill View ▸ Theme again from the model, dropping its old items.
+    fn rebuild_themes(&mut self, model: &[menu::Menu]) {
+        let Some((sub, at)) = self.themes.clone() else { return };
+        let Some(entries) = model.iter().flat_map(|m| &m.entries).find_map(|e| match e {
+            Entry::Submenu("Theme", entries) => Some(entries),
+            _ => None,
+        }) else {
+            return;
+        };
+        let mut gone = HashSet::new();
+        while let Some(old) = sub.remove_at(0) {
+            gone.insert(old.id().clone());
+        }
+        self.commands.retain(|id, _| !gone.contains(id));
+        self.checks.retain(|(_, c)| !gone.contains(c.id()));
+        self.items.retain(|s| !gone.contains(s.item.id()));
+        for (n, e) in entries.iter().enumerate() {
+            self.append_entry(&sub, e, [&at[..], &[n]].concat());
         }
     }
 
