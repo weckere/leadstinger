@@ -39,9 +39,26 @@ impl WaylandDrops {
             }
             let drops = Self::default();
             let (queue, ctx) = (drops.queue.clone(), cc.egui_ctx.clone());
+            // Only drags over the main window: these drops all go to its input, and a set
+            // window's surface has positions of its own (D-227). Unknown: take them all.
+            let main = {
+                use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+                cc.window_handle().ok().and_then(|h| match h.as_raw() {
+                    RawWindowHandle::Wayland(w) => Some(w.surface.as_ptr() as usize),
+                    _ => None,
+                })
+            };
+            let over_main = std::sync::atomic::AtomicBool::new(true);
             let set = smithay_clipboard::dnd::set_drop_handler(move |e| {
                 use smithay_clipboard::dnd::DropEvent;
                 let at = |x: f64, y: f64| Pos2::new(x as f32, y as f32);
+                use std::sync::atomic::Ordering::Relaxed;
+                if let DropEvent::Enter { surface, .. } = &e {
+                    over_main.store(main.is_none_or(|m| m == *surface), Relaxed);
+                }
+                if !over_main.load(Relaxed) {
+                    return;
+                }
                 let e = match e {
                     DropEvent::Enter { x, y, .. } => DragEvent::Enter(at(x, y)),
                     DropEvent::Motion { x, y } => DragEvent::Motion(at(x, y)),

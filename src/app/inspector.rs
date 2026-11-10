@@ -13,7 +13,7 @@ use crate::controller::InspectorTab;
 const FOOTER_H: f32 = 74.0;
 
 /// The widest readouts the tabs' sliders show, so each tab's rails line up (D-211).
-const PLAY_VALUES: [&str; 2] = ["10.0 s", STOP_FADE_ZERO];
+const PLAY_VALUES: [&str; 3] = ["10.0 s", STOP_FADE_ZERO, "−40.0 dB"];
 const SOUND_VALUES: [&str; 3] = ["+24.0 dB", "+12.0 st", "2.00×"];
 
 /// How wide a button or value box showing `text` is: the text and the button padding.
@@ -97,12 +97,14 @@ impl StingerApp {
                     let on = !opt.get(&t);
                     opt.set(&mut t, on);
                 }
-                volume_slider(ui, &mut t.volume, false);
+                if volume_slider(ui, &mut t.volume, false, Some(t.muted)).1 {
+                    t.muted = !t.muted;
+                }
             });
             let tab = self.tab_bar(ui, &InspectorTab::ALL, actions);
             // The Cue tab greys only its edits: a locked set still runs, so Play On and Jump play.
             ui.add_enabled_ui(!locked || tab == InspectorTab::Cue, |ui| match tab {
-                InspectorTab::Play => play_tab(ui, &mut t),
+                InspectorTab::Play => play_tab(ui, &mut t, self.ctl.store.library.duck_db),
                 InspectorTab::Sound => self.sound_tab(ui, &mut t, actions),
                 InspectorTab::Cue => self.cue_tab(ui, &mut t, locked, actions),
                 InspectorTab::Control => self.control_tab(ui, &t, orig, actions),
@@ -114,13 +116,19 @@ impl StingerApp {
         }
     }
 
-    /// The name with the tile's key beside it; under them the picture and the colour.
+    /// The emoji and the name, with the tile's key beside them; under them the picture and
+    /// the colour.
     fn identity_row(&self, ui: &mut Ui, t: &mut Tile, picture: bool, actions: &mut Vec<Action>) {
         let tokens = Tokens::get(ui.ctx());
         ui.horizontal(|ui| {
             let cap_font = theme::bold(12.0);
             let cap_w = t.hotkey.map_or(0.0, |k| (ui.painter().layout_no_wrap(k.label(), cap_font.clone(), tokens.key_text()).size().x + 8.0).max(26.0));
             let cap = if t.hotkey.is_some() { cap_w + ui.spacing().item_spacing.x } else { 0.0 };
+            // The emoji drawn before the title on the pad (D-253): only emoji stay.
+            let emoji = egui::TextEdit::singleline(&mut t.emoji).font(FontId::proportional(16.0)).desired_width(40.0).hint_text("☺");
+            if theme::hint(theme::name(theme::text_field(ui, emoji), "Emoji"), tips::EMOJI_TIP).changed() {
+                t.emoji = crate::model::emoji_only(&t.emoji);
+            }
             let field = egui::TextEdit::singleline(&mut t.title).font(FontId::proportional(16.0)).desired_width((ui.available_width() - cap).max(80.0));
             theme::hint(theme::name(theme::text_field(ui, field), "Title"), "The tile's title, shown on it and read out by screen readers");
             if let Some(k) = t.hotkey {
@@ -756,7 +764,7 @@ impl StingerApp {
         let set = |key: &'static str, v: Value| changes.borrow_mut().push((key, v));
         let locked_set = tiles.iter().find_map(|t| lib.locate(t.id).filter(|(si, _)| lib.sets[*si].locked).map(|(si, _)| si));
         let locked = self.inspector_head(ui, &format!("{} TILES", tiles.len()), locked_set.or_else(|| lib.locate(first.id).map(|(si, _)| si)), actions);
-        ui.label(RichText::new("Changes here apply to every selected tile. ⌘/Ctrl-click adds or removes a tile, Shift-click selects the rectangle of tiles up to it.").small().weak());
+        ui.label(RichText::new(crate::theme::platform_keys("Changes here apply to every selected tile. ⌘/Ctrl-click adds or removes a tile, Option/Alt-click removes one, Shift-click selects the rectangle of tiles up to it; Option/Alt-drag copies them.")).small().weak());
         egui::ScrollArea::vertical().id_salt("inspector").auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 8.0;
             ui.add_enabled_ui(!locked, |ui| {
@@ -774,8 +782,14 @@ impl StingerApp {
                 }
                 let common = same(&tiles, |t| t.volume);
                 let mut v = common.unwrap_or(first.volume);
-                if volume_slider(ui, &mut v, common.is_none()).changed() {
+                let muted = same(&tiles, |t| t.muted);
+                let (slider, mute) = volume_slider(ui, &mut v, common.is_none(), muted);
+                if slider.changed() {
                     set("volume", json!(v));
+                }
+                // A mixed selection mutes them all, like a mixed option.
+                if mute {
+                    set("muted", json!(muted != Some(true)));
                 }
             });
             let tab = self.tab_bar(ui, &[InspectorTab::Play, InspectorTab::Sound], actions);
@@ -832,6 +846,12 @@ impl StingerApp {
                         set("duck", json!(d));
                     }
                     ui.end_row();
+                    // Every one a bed: their level, a dash where it differs.
+                    if duck == Some(Duck::Ducked) {
+                        if let Some(level) = duck_to_row(ui, same(&tiles, |t| t.duck_db).ok_or(()), lib.duck_db) {
+                            set("duckLevel", json!(level));
+                        }
+                    }
                 });
             });
         });
@@ -942,10 +962,13 @@ impl FooterButton {
     }
 }
 
-/// The volume, one slider across the column (`mixed` for a selection that differs).
-fn volume_slider(ui: &mut Ui, volume: &mut f32, mixed: bool) -> egui::Response {
+/// The volume, one slider across the column (`mixed` for a selection that differs), with
+/// the Mute speaker beside it (`muted`, `None` when a selection is mixed; D-251). Returns
+/// the slider and whether Mute was clicked.
+fn volume_slider(ui: &mut Ui, volume: &mut f32, mixed: bool, muted: Option<bool>) -> (egui::Response, bool) {
     ui.horizontal(|ui| {
         ui.label("Volume");
+        let mute = pad_options::mute_toggle(ui, muted).clicked();
         fit_sliders(ui, &["−∞ dB", "−40.0 dB"], 0.0);
         let slider = egui::Slider::new(volume, 0.0..=1.0).custom_formatter(move |v, _| {
             if mixed {
@@ -957,13 +980,50 @@ fn volume_slider(ui: &mut Ui, volume: &mut f32, mixed: bool) -> egui::Response {
             }
         });
         let tip = if mixed { "Each tile's level (— where they differ; a change sets them all)" } else { "The tile's level: drag, or type a value" };
-        theme::hint(theme::name(ui.add(slider), "Volume"), tip)
+        (theme::hint(theme::name(ui.add(slider), "Volume"), tip), mute)
     })
     .inner
 }
 
-/// The Play tab: the fades, the stop fade, the fade shape and ducking.
-fn play_tab(ui: &mut Ui, t: &mut Tile) {
+/// A bed's "Duck to" row (D-245): its own duck level on a rail, or the library's amount
+/// (`library`, dB) when it has none, with Default to go back to that. `own` is `None` for
+/// a bed that follows the library, and `Err(())` for a selection whose levels differ.
+/// Returns the new level when it changes: `Some(None)` is back to the default.
+fn duck_to_row(ui: &mut Ui, own: Result<Option<f32>, ()>, library: f32) -> Option<Option<f32>> {
+    let mut change = None;
+    ui.label("Duck to");
+    ui.horizontal(|ui| {
+        let mixed = own.is_err();
+        let mut v = own.ok().flatten().unwrap_or(library);
+        let rail = ui.add(
+            egui::Slider::new(&mut v, DUCK_DB_MIN..=0.0)
+                .step_by(0.1)
+                .custom_formatter(move |x, _| if mixed { "—".to_owned() } else { format!("{x:.1} dB") })
+                .custom_parser(|s| s.trim().trim_end_matches("dB").trim().replace('−', "-").parse().ok()),
+        );
+        let (name, tip) = match own {
+            Err(()) => ("Duck to".to_owned(), format!("{} (— where they differ; a change sets them all)", tips::DUCK_TO_TIP)),
+            Ok(None) => (format!("Duck to, the default {library:.1} dB"), format!("{}. Now the default: the duck amount in Settings ({library:.1} dB)", tips::DUCK_TO_TIP)),
+            Ok(Some(_)) => ("Duck to".to_owned(), tips::DUCK_TO_TIP.to_owned()),
+        };
+        if theme::hint(theme::name(rail, &name), tip).changed() {
+            change = Some(Some(v));
+        }
+    });
+    ui.end_row();
+    // Under the rail, as Normalise is under Gain, so the rail keeps its room (D-211).
+    ui.label("");
+    if own == Ok(None) {
+        theme::hint(ui.weak("Follows Settings"), format!("The default: the duck amount in Settings ({library:.1} dB); drag the rail to give this bed its own"));
+    } else if theme::hint(theme::name(theme::small_button(ui, "Default"), "Default duck level"), format!("Back to the duck amount in Settings ({library:.1} dB)")).clicked() {
+        change = Some(None);
+    }
+    ui.end_row();
+    change
+}
+
+/// The Play tab: the fades, the stop fade, the fade shape and ducking (and a bed's level).
+fn play_tab(ui: &mut Ui, t: &mut Tile, library_duck_db: f32) {
     egui::Grid::new("play-tab").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
         ui.label("Fade in");
         fit_sliders(ui, &PLAY_VALUES, 0.0);
@@ -991,6 +1051,11 @@ fn play_tab(ui: &mut Ui, t: &mut Tile) {
         });
         theme::hint(theme::name(combo.response, &format!("Ducking, {}", t.duck.label())), tips::DUCK_TIP);
         ui.end_row();
+        if t.duck == Duck::Ducked {
+            if let Some(level) = duck_to_row(ui, Ok(t.duck_db), library_duck_db) {
+                t.duck_db = level;
+            }
+        }
     });
 }
 

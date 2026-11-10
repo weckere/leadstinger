@@ -54,6 +54,10 @@ pub struct State {
     pub editor: bool,
     /// The selected tile has a sound the editor can open.
     pub can_edit_wave: bool,
+    /// The current set is open in a window of its own (`window.open`, D-224).
+    pub set_window: bool,
+    /// Any set is open in a window of its own.
+    pub windows_open: bool,
 }
 
 pub struct Item {
@@ -264,6 +268,11 @@ pub fn menus(s: &State, mac: bool) -> Vec<Menu> {
                 ],
             ),
             Entry::Submenu("Zoom", zoom),
+            Entry::Separator,
+            // A window of its own for the current set, to put on another monitor or
+            // workspace; checked while it has one (choosing it then raises it).
+            checked(item("window.open"), s.set_window),
+            enabled(item("window.gather"), s.windows_open, "No set is open in a window of its own"),
         ],
     });
     out.push(Menu {
@@ -367,6 +376,8 @@ pub fn help(cmd: Cmd) -> &'static str {
         ("view.zoom", Arg::Str("out")) => "Make everything in the window smaller",
         ("view.zoom", Arg::Str("reset")) => "Show everything at its normal size (100 %)",
         ("view.zoom", _) => "Show everything in the window at this size",
+        ("window.open", _) => "Show this set in a window of its own, to put on another monitor or workspace; it opens there again next time",
+        ("window.gather", _) => "Bring every set window back beside this one, say from a monitor that's no longer there",
         ("cue.go", _) => "Play the selected cue and stop the rest of the list; again while it plays, stop it",
         ("cue.top", _) => "Move the cue pointer back to the first cue, without playing",
         ("cue.reset", _) => "Arm every cue again and select the first; nothing stops",
@@ -398,7 +409,7 @@ pub fn menu_help(title: &str) -> &'static str {
     match title {
         "File" => "New sets and tiles, import and export, and the library",
         "Edit" => "Undo and redo changes to sets and tiles",
-        "View" => "The setlist and inspector, grid or cue list, search, theme",
+        "View" => "The setlist and inspector, grid or cue list, search, theme, set windows",
         "Playback" => "The cue list, Stop All, talk-over, recording and the master volume",
         "Help" => "Keyboard shortcuts, Check for Updates and About",
         "Columns" => "Tiles per row in this set's grid",
@@ -591,6 +602,8 @@ mod tests {
             zoom: 100,
             editor: false,
             can_edit_wave: true,
+            set_window: false,
+            windows_open: false,
         }
     }
 

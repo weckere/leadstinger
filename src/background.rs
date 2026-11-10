@@ -40,22 +40,41 @@ pub fn event_loop(b: &mut winit::event_loop::EventLoopBuilder<eframe::UserEvent>
 pub fn hide_window(cc: &eframe::CreationContext<'_>) {
     #[cfg(target_os = "macos")]
     {
-        use objc2_app_kit::{NSView, NSWindowCollectionBehavior};
+        use objc2_app_kit::NSView;
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
         let Ok(handle) = cc.window_handle() else { return };
         let RawWindowHandle::AppKit(h) = handle.as_raw() else { return };
         // SAFETY: winit's handle points at the window's live content view, and this runs
         // on the main thread.
         let Some(view) = (unsafe { objc2::rc::Retained::retain(h.ns_view.as_ptr().cast::<NSView>()) }) else { return };
-        let Some(window) = view.window() else { return };
-        window.setAlphaValue(0.0);
-        window.setIgnoresMouseEvents(true);
-        window.setHasShadow(false);
-        // Not in Mission Control's window cycling or ⌘`.
-        window.setCollectionBehavior(NSWindowCollectionBehavior::Transient | NSWindowCollectionBehavior::IgnoresCycle);
+        if let Some(window) = view.window() {
+            hide(&window);
+        }
     }
     #[cfg(not(target_os = "macos"))]
     let _ = cc;
+}
+
+/// Hide every window the app has, as [`hide_window`] does the main one: a set window
+/// (D-226) opens hidden, and this runs before it's shown. Elsewhere, nothing.
+pub fn hide_windows() {
+    #[cfg(target_os = "macos")]
+    {
+        let Some(mtm) = objc2::MainThreadMarker::new() else { return };
+        for window in objc2_app_kit::NSApplication::sharedApplication(mtm).windows().iter() {
+            hide(&window);
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn hide(window: &objc2_app_kit::NSWindow) {
+    use objc2_app_kit::NSWindowCollectionBehavior;
+    window.setAlphaValue(0.0);
+    window.setIgnoresMouseEvents(true);
+    window.setHasShadow(false);
+    // Not in Mission Control's window cycling or ⌘`.
+    window.setCollectionBehavior(NSWindowCollectionBehavior::Transient | NSWindowCollectionBehavior::IgnoresCycle);
 }
 
 #[cfg(test)]

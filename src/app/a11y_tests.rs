@@ -166,6 +166,17 @@ fn gaps(board: &Board, screen: &str) -> Vec<String> {
         if ax.role() == Role::Unknown && siblings.iter().any(|s| s.label().as_deref() == Some("Close window")) {
             continue;
         }
+        // A set window drawn inside the harness's one window (embedded): egui's title
+        // bar along its top, which the real, separate window doesn't have.
+        let window = std::iter::successors(node.parent(), |n| n.parent()).find(|n| n.accesskit_node().label().is_some_and(|l| !l.trim().is_empty()));
+        let title_bar = window.is_some_and(|w| {
+            let w = w.accesskit_node();
+            let (me, it) = (ax.bounding_box().map_or(f64::MAX, |r| r.y0), w.bounding_box().map_or(f64::MAX, |r| r.y0));
+            w.label().is_some_and(|l| l.ends_with(&format!(" · {APP_NAME}"))) && (me - it).abs() < 2.0
+        });
+        if ax.role() == Role::Unknown && title_bar {
+            continue;
+        }
         let label = ax.label().filter(|l| !l.trim().is_empty());
         let what = match &label {
             Some(l) => format!("{:?} {l:?}", ax.role()),
@@ -322,6 +333,16 @@ fn walk(theme: ThemeKind) -> BTreeSet<String> {
     look(&b, "list");
     b.run("set.select", json!({"set": "#2"}));
     look(&b, "list, cue set");
+    // A set in a window of its own (D-222): a grid set beside the cue list, and
+    // the View menu. (Embedded in the harness's one window, two cue lists would share
+    // their controls' ids; real windows each have their own.)
+    b.run("set.layout", json!({"set": "#1", "layout": "grid"}));
+    b.run("window.open", json!({"set": "#1"}));
+    look(&b, "set window");
+    b.click("View");
+    look(&b, "menu View, a set window open");
+    b.press(Key::Escape);
+    b.run("window.close", json!({"all": true}));
     found
 }
 
@@ -576,6 +597,38 @@ fn tile_keys_play_with_a_pad_selected_and_with_option() {
     // A screen reader hears it.
     let shown = if cfg!(target_os = "macos") { "Option 1" } else { "Alt 1" };
     b.harness.get_by_label_contains(&format!("Air Horn, tile 5, row 5, key {shown}"));
+}
+
+/// A set in a window of its own (D-222, D-223): it shows that set's board with its own
+/// bar while the main window shows another set; a click in it selects the pad, which the
+/// main window's inspector shows; its Grid key changes that set; the setlist says it's
+/// open; closing it closes it. (The harness has one window, so egui draws the set window
+/// inside it.)
+#[test]
+fn a_set_window_shows_its_set_and_drives_the_inspector() {
+    let mut b = Board::new(ThemeKind::Console);
+    let lender = b.harness.state().lender.clone();
+    assert!(b.harness.query_by_label_contains("Preshow Music").is_none(), "Theatre Cues isn't shown yet");
+    b.run("window.open", json!({"set": "Theatre Cues"}));
+    b.harness.get_by_label("Set window bar");
+    assert_eq!(b.harness.query_all_by_label("Stop All").count(), 2, "the set window has its own Stop All");
+    b.harness.get_all_by_label_contains("Preshow Music").next().expect("its cue list is drawn").click();
+    b.harness.run_steps(3);
+    let (current, selected) = lender.with(|c| (c.current_set().name.clone(), c.selected_tile.and_then(|id| c.store.library.tile(id)).map(|t| t.title.clone())));
+    assert_eq!(current, "Game Night", "the main window keeps its set");
+    assert_eq!(selected.as_deref(), Some("Preshow Music"), "a click in the set window selects its pad");
+    assert!(b.harness.query_by_label_contains("Theatre Cues, set 2 of 2, 6 tiles, in its own window").is_some(), "the setlist says it's open in a window");
+    // Its Grid key switches that set, not the main window's.
+    b.harness.get_all_by_label("Grid").last().expect("the set window's Grid key").click();
+    b.harness.run_steps(3);
+    lender.with(|c| {
+        let layout = |name: &str| c.store.library.sets.iter().find(|s| s.name == name).map(|s| s.layout).unwrap();
+        assert_eq!(layout("Theatre Cues"), Layout::Grid);
+        assert_eq!(layout("Game Night"), Layout::Grid);
+        assert_eq!(c.current_set().name, "Game Night");
+    });
+    b.run("window.close", json!({"set": "Theatre Cues"}));
+    assert!(b.harness.query_by_label("Set window bar").is_none(), "closed");
 }
 
 /// No modes (M22, D-147): a click selects a pad and doesn't play it; a double-click
@@ -1041,6 +1094,83 @@ fn the_inspector_options_are_toggle_buttons() {
     }
 }
 
+/// Mute (D-251): the speaker beside Volume is a toggle that keeps the level, a mixed
+/// selection reads mixed, and the pad says it's muted to a screen reader and in its
+/// hover text (its badge is the same speaker, drawn).
+#[test]
+fn mute_sits_beside_the_volume_and_the_pad_says_so() {
+    for theme in [ThemeKind::Console, ThemeKind::Panel] {
+        let mut b = Board::new(theme);
+        let lender = b.harness.state().lender.clone();
+        let toggle = |b: &Board| {
+            let n = b.harness.get_all_by_label("Mute").find(|n| n.accesskit_node().role() == Role::Button && n.accesskit_node().toggled().is_some());
+            n.unwrap_or_else(|| panic!("{theme:?}: no Mute toggle")).accesskit_node().toggled()
+        };
+        let click = |b: &mut Board| {
+            b.harness.get_all_by_label("Mute").find(|n| n.accesskit_node().role() == Role::Button && n.accesskit_node().toggled().is_some()).expect("Mute").click();
+            b.harness.run_steps(3);
+        };
+        let tile = |title: &str| lender.with(|c| c.current_set().tiles.iter().find(|t| t.title == title).map(|t| (t.muted, t.volume))).unwrap();
+        let label = |b: &Board, title: &str| {
+            b.harness.root().children_recursive().filter_map(|n| n.accesskit_node().label()).find(|l| l.starts_with(&format!("{title}, tile "))).unwrap_or_else(|| panic!("no {title} pad"))
+        };
+        b.run("view.select", json!({"tile": "Air Horn"}));
+        let volume = tile("Air Horn").1;
+        assert_eq!(toggle(&b), Some(Toggled::False), "{theme:?}");
+        assert!(!label(&b, "Air Horn").contains("muted"));
+        click(&mut b);
+        assert_eq!(tile("Air Horn"), (true, volume), "{theme:?}: muted at its volume");
+        assert_eq!(toggle(&b), Some(Toggled::True), "{theme:?}");
+        assert!(label(&b, "Air Horn").contains("hold"), "{theme:?}: {}", label(&b, "Air Horn"));
+        assert!(label(&b, "Air Horn").contains("muted"), "{theme:?}: {}", label(&b, "Air Horn"));
+        let tip = b.harness.root().children_recursive().filter_map(|n| n.accesskit_node().description()).find(|d| d.starts_with("Air Horn\n")).expect("hover text");
+        assert!(tip.contains("muted · hold"), "{theme:?}: {tip}");
+        b.run("edit.undo", json!({}));
+        assert!(!tile("Air Horn").0, "{theme:?}: one undo step");
+        b.run("tile.set", json!({"tile": "Air Horn", "muted": true}));
+        // Two tiles, one muted: Mute reads mixed, and a click mutes both.
+        b.run("view.select", json!({"tile": "Crickets", "add": true}));
+        assert_eq!(toggle(&b), Some(Toggled::Mixed), "{theme:?}");
+        click(&mut b);
+        assert!(tile("Air Horn").0 && tile("Crickets").0, "{theme:?}");
+        click(&mut b);
+        assert!(!tile("Air Horn").0 && !tile("Crickets").0, "{theme:?}: and unmutes both");
+    }
+}
+
+/// A tile's emoji (D-253): an Emoji field beside the title with hover text that keeps
+/// only emoji, one undo step; the pad draws it before its title when there is room, and
+/// leaves it out of the pad's spoken name (a screen reader would read "dog face" first).
+#[test]
+fn the_emoji_field_keeps_emoji_and_the_pad_draws_them() {
+    for theme in [ThemeKind::Console, ThemeKind::Panel] {
+        let mut b = Board::new(theme);
+        let lender = b.harness.state().lender.clone();
+        let emoji = || lender.with(|c| c.current_set().tiles.iter().find(|t| t.title == "Air Horn").map(|t| t.emoji.clone())).unwrap();
+        b.run("view.select", json!({"tile": "Air Horn"}));
+        let field = b.harness.get_by_label("Emoji");
+        assert_eq!(field.accesskit_node().description().as_deref(), Some(tips::EMOJI_TIP), "{theme:?}");
+        field.focus();
+        b.harness.run_steps(2);
+        b.harness.get_by_label("Emoji").type_text("📯 horn");
+        b.harness.run_steps(3);
+        assert_eq!(emoji(), "📯", "{theme:?}: only the emoji stay");
+        let pad = b.harness.root().children_recursive().filter_map(|n| n.accesskit_node().label()).find(|l| l.starts_with("Air Horn, tile ")).expect("the pad");
+        assert!(!pad.contains('📯'), "{theme:?}: not in the spoken name: {pad}");
+        b.press(Key::Escape);
+        b.run("edit.undo", json!({}));
+        assert_eq!(emoji(), "", "{theme:?}: one undo step");
+    }
+    let all = |_| true;
+    let tile = Tile { title: "Horn".into(), emoji: "📯".into(), ..Default::default() };
+    assert_eq!((pad_title_with(&tile, 120.0, all), pad_title_with(&tile, 40.0, all)), ("📯 Horn".to_owned(), "Horn".to_owned()), "a narrow pad leaves it off");
+    assert_eq!(pad_title_with(&Tile { title: "Horn".into(), ..Default::default() }, 120.0, all), "Horn");
+    // An emoji the face lacks is left off (a box would draw), the joiner kept.
+    let vest = Tile { title: "Dog".into(), emoji: "🐕\u{200D}\u{1F9BA}".into(), ..Default::default() };
+    assert_eq!(pad_title_with(&vest, 120.0, |c| c != '\u{1F9BA}'), "🐕\u{200D} Dog");
+    assert_eq!(pad_title_with(&Tile { emoji: "\u{1F9BA}".into(), ..vest.clone() }, 120.0, |c| c != '\u{1F9BA}'), "Dog", "none it can draw: none");
+}
+
 /// The inspector keeps the width it opens at (D-211): nothing in it, on any screen, is
 /// wider than the column. egui lets a side panel's content widen it, and the panel keeps
 /// that width, so a single row too wide (a long output name, a fixed-width menu) would
@@ -1371,6 +1501,127 @@ fn a_selection_drags_together() {
             (t.len(), l.current_set().tiles.len(), t[t.len() - 2].id == a && t[t.len() - 1].id == c)
         });
         assert_eq!(after, (before.0 + 2, before.1 - 2, true), "{theme:?}: both moved to the other set's end, in order");
+    }
+}
+
+/// t-m22-alt-drag-copy (D-229): Alt-click takes a selected pad out of the selection and
+/// leaves an unselected one alone, playing nothing; Alt-drag drops copies (with a ghost
+/// for each and the originals still on the board) into a gap or onto another set, as one
+/// undo step; letting go of Alt before the drop moves instead.
+#[test]
+fn alt_click_subtracts_and_alt_drag_copies() {
+    for theme in [ThemeKind::Console, ThemeKind::Panel] {
+        let mut b = Board::new(theme);
+        b.run("set.rows", json!({"rows": [3, 3]}));
+        let lender = b.harness.state().lender.clone();
+        let rect = |b: &Board, i: usize| b.harness.state().tile_rects.iter().find(|(_, j, _)| *j == i).expect("drawn").2;
+        let titles = |l: &Arc<Lender>| {
+            l.with(|c| {
+                let s = c.current_set();
+                s.slots().iter().map(|r| r.iter().map(|x| x.map_or("_".to_owned(), |i| s.tiles[i].title.clone())).collect::<Vec<_>>()).collect::<Vec<_>>()
+            })
+        };
+        let ids = |l: &Arc<Lender>| l.with(|c| c.current_set().tiles.iter().map(|t| t.id).collect::<Vec<_>>());
+        let ghosts = |b: &Board| b.harness.state().slot_anim.keys().filter(|k| (0..3).any(|r| (0..8).any(|a| **k == egui::Id::unique(("ghost", r, a))))).count();
+        let modifiers = |b: &mut Board, m: Modifiers| {
+            b.harness.event(egui::Event::ModifiersChanged(m));
+            b.harness.run_steps(2);
+        };
+        let press = |b: &mut Board, from: Pos2, to: Pos2, m: Modifiers| {
+            b.harness.event(egui::Event::PointerMoved(from));
+            b.harness.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: m });
+            b.harness.run_steps(2);
+            for k in 1..=6 {
+                b.harness.event(egui::Event::PointerMoved(from + (to - from) * (k as f32 / 6.0)));
+                b.harness.run_steps(1);
+            }
+            b.harness.run_steps(30);
+        };
+        let release = |b: &mut Board, to: Pos2, m: Modifiers| {
+            b.harness.event(egui::Event::PointerButton { pos: to, button: egui::PointerButton::Primary, pressed: false, modifiers: m });
+            b.harness.run_steps(30);
+            b.harness.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+            b.harness.run_steps(2);
+        };
+        let click = |b: &mut Board, i: usize, m: Modifiers| {
+            let p = rect(b, i).center();
+            b.harness.event(egui::Event::ModifiersChanged(m));
+            b.harness.event(egui::Event::PointerMoved(p));
+            for pressed in [true, false] {
+                b.harness.event(egui::Event::PointerButton { pos: p, button: egui::PointerButton::Primary, pressed, modifiers: m });
+                b.harness.run_steps(1);
+            }
+            b.harness.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+            b.harness.run_steps(10);
+        };
+        let selected = |l: &Arc<Lender>| l.with(|c| c.selected());
+        let s = titles(&lender);
+        let all = ids(&lender);
+
+        // Alt-click: the middle pad of three goes out; an unselected pad changes nothing.
+        b.run("view.select", json!({"tiles": [all[0], all[1], all[2]]}));
+        click(&mut b, 1, Modifiers::ALT);
+        assert_eq!(selected(&lender), vec![all[0], all[2]], "{theme:?}: Alt-click took it out");
+        click(&mut b, 4, Modifiers::ALT);
+        assert_eq!(selected(&lender), vec![all[0], all[2]], "{theme:?}: an unselected pad leaves the selection");
+        assert!(s.iter().flatten().all(|t| !b.playing(t)), "{theme:?}: Alt-click plays nothing");
+        // ⌘-click still toggles.
+        click(&mut b, 1, Modifiers::COMMAND);
+        assert_eq!(selected(&lender), vec![all[0], all[2], all[1]], "{theme:?}");
+        b.run("view.select", json!({"tiles": [all[0], all[2]]}));
+
+        // Alt-drag the first and third to the second row's start: copies go in there.
+        let to = rect(&b, 3).left_center() + vec2(8.0, 0.0);
+        let from = rect(&b, 0).center();
+        modifiers(&mut b, Modifiers::ALT);
+        press(&mut b, from, to, Modifiers::ALT);
+        b.harness.state_mut().slot_anim.clear();
+        b.harness.run_steps(1);
+        assert_eq!(ghosts(&b), 2, "{theme:?}: a ghost for each copy");
+        assert_eq!(b.harness.state().tile_rects.len(), all.len(), "{theme:?}: the originals are still drawn");
+        release(&mut b, to, Modifiers::ALT);
+        let g = titles(&lender);
+        let row1: Vec<String> = [s[0][0].clone(), s[0][2].clone()].into_iter().chain(s[1].iter().cloned()).collect();
+        assert_eq!(g[..2], [s[0].clone(), row1], "{theme:?}: the originals stay, the copies lead row 2");
+        let now = ids(&lender);
+        assert_eq!(now.len(), all.len() + 2, "{theme:?}");
+        assert!(now[..3] == all[..3] && !all.contains(&now[3]) && !all.contains(&now[4]), "{theme:?}: new tiles, originals untouched");
+        assert_eq!(selected(&lender), vec![all[0], all[2]], "{theme:?}: the originals stay selected");
+        // One undo step takes both copies away.
+        b.run("edit.undo", json!({}));
+        b.harness.run_steps(5);
+        assert_eq!((titles(&lender), ids(&lender)), (s.clone(), all.clone()), "{theme:?}: one undo");
+
+        // Alt let go before the drop: it's a move after all.
+        let to = rect(&b, 3).left_center() + vec2(8.0, 0.0);
+        let from = rect(&b, 0).center();
+        modifiers(&mut b, Modifiers::ALT);
+        press(&mut b, from, to, Modifiers::ALT);
+        modifiers(&mut b, Modifiers::NONE);
+        release(&mut b, to, Modifiers::NONE);
+        assert_eq!(ids(&lender).len(), all.len(), "{theme:?}: moved, not copied");
+        assert_eq!(titles(&lender)[0], vec![s[0][1].clone()], "{theme:?}");
+        b.run("edit.undo", json!({}));
+        b.harness.run_steps(5);
+
+        // Alt-dropped on the second set in the sidebar: copies at its end, this set as it was.
+        b.run("set.rows", json!({"perRow": 3}));
+        b.harness.run_steps(10);
+        b.run("view.select", json!({"tiles": [all[0], all[1]]}));
+        let before = lender.with(|c| c.store.library.sets[1].tiles.len());
+        let set = b.harness.get_by_label_contains(", set 2 of ").rect().center();
+        let from = rect(&b, 0).center();
+        modifiers(&mut b, Modifiers::ALT);
+        press(&mut b, from, set, Modifiers::ALT);
+        release(&mut b, set, Modifiers::ALT);
+        let (n, last_two, here) = lender.with(|l| {
+            let t = &l.store.library.sets[1].tiles;
+            (t.len(), t[t.len() - 2..].iter().map(|t| (t.id, t.title.clone())).collect::<Vec<_>>(), l.current_set().tiles.iter().map(|t| t.id).collect::<Vec<_>>())
+        });
+        assert_eq!(n, before + 2, "{theme:?}: two copies in the other set");
+        assert_eq!(last_two.iter().map(|x| x.1.clone()).collect::<Vec<_>>(), vec![s[0][0].clone(), s[0][1].clone()], "{theme:?}: in order, at its end");
+        assert!(last_two.iter().all(|x| !all.contains(&x.0)), "{theme:?}: copies, not the originals");
+        assert_eq!(here, all, "{theme:?}: this set keeps its pads");
     }
 }
 

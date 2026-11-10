@@ -15,7 +15,14 @@ pub mod control;
 pub mod controller;
 pub mod decode;
 pub mod demo;
+pub mod farrago;
+#[cfg(not(target_os = "ios"))]
 pub mod hotkeys;
+#[cfg(target_os = "ios")]
+#[path = "ios/hotkeys.rs"]
+pub mod hotkeys;
+#[cfg(target_os = "ios")]
+pub mod ios;
 pub mod input;
 pub mod launcher;
 pub mod level;
@@ -43,6 +50,7 @@ pub mod starter;
 pub mod store;
 pub mod theme;
 pub mod themes;
+pub mod titlebar;
 pub mod transcode;
 pub mod update;
 pub mod wav;

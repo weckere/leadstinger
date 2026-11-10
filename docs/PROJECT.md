@@ -37,6 +37,7 @@ maintainer's own machines and a private gift edition are left out or reworded.
 | M20 | Accessibility and hover text | in_progress (95%) | Items 1-7 on main (1d37a06, 6a09fff, f393714), plus the VoiceOver walk-through's fixes (fc9d685) and the microphone fix (5f6b530: cpal 0.18.2, so launching no longer asks for the mic; the mic opens off the controller lock): the egui_kittest harness over the AccessKit tree, hover text through theme::hint, screen-reader roles and live labels, keyboard-only use, zoom and high contrast, announcements in a live region with optional spoken cue names (D-092/D-093), and Accessibility docs. Left: Orca and a short VoiceOver listen by the maintainer (t-m20-verify). |
 | M21 | QuipClipper clips browser | done | Done 2026-10-21 (main 48d079b, D-098): a QuipClipper window browses a connected server's clips library with folders, search, kind filters and newest first; previews in memory; adds clips to the current set as FLAC, trimmed to the line and titled with it; imports set files; shows how many clips are new; and works from the keyboard and with screen readers. CLI parity: quip.browse, quip.search, quip.new, quip.add, quip.preview. Built on QuipClipper's clips library API (contract quipclipper.clips/1). Not in 0.3.0. |
 | M22 | Board redesign: slot grid with live drag preview, modeless editing, pad options | done | Design complete and approved by the maintainer in answers (side-session notes board-redesign-design.md, sections 4-6). Slot grid with blank slots, rows filling the board, live drag preview dropping into gaps (rows widen), phantom rows; Finder files insert like pads (no drop-to-replace); pads without a title bar, titles up to 4 lines, option badges, solo border; options Loop/Solo/Pausable/One-shot/Hold/Disabled (One-shot replaces Always Restart, exclusive with Pausable; Hold+Pausable resumes, Hold+One-shot restarts); modeless: click selects, double-click plays (double-click-and-hold for Hold), inspector edits, bottom bar Sidebar/Add Sound/Grid/List/Inspector (Panel: pills on its bottom frame), per-set lock covering set settings, set settings in the inspector. Library v4 migration. Three build steps, after the weekly reset (Oct 28) or on the maintainer's go. |
+| M23 | iPadOS port | in_progress (75%) | LeadStinger on iPadOS: feasibility spike, then an Xcode-buildable app in the iPad simulator |
 
 ## Decisions
 
@@ -1682,16 +1683,280 @@ Each decision with its reasoning and the alternatives that were turned down.
 
 **Alternatives:** Finish the 0.3.0 retest first and release as 0.3.0 (the plan until now); release as 0.3.0 now (the maintainer chose the 0.2.1 number)
 
-16 decisions about private infrastructure and the gift edition are left out of the public snapshot: D-013, D-015, D-023, D-030, D-031, D-033, D-036, D-037, D-038, D-130, D-137, D-138, D-139, D-162, D-174, D-186.
+### D-222: Multi-window (t-m22-multi-window): a set can open in a real OS window of its own (an egui immediate viewport, one per set), showing that set's board (pads or cue list) with a slim header (set name, lock, what's playing in it, Grid/Cue List, Stop All) in the current theme and zoom. The main window keeps the menus, Setlist, Inspector, bottom bar, Settings and the other windows; closing a set window just closes it, closing the main window quits. One audio engine, one library, one controller.
+
+*2026-11-02*
+
+**Why:** The maintainer (2026-11-02) wants LeadStinger spread across monitors and Hyprland workspaces. A set per window is the unit people place on a second screen (a cue list on the operator screen, a pad set on a touch monitor); immediate viewports keep full access to the app state without making StingerApp Send+Sync, and eframe 0.37 keeps running the root's ui while any child window is visible, so a minimised main window doesn't freeze or close the set windows.
+
+**Alternatives:** Deferred viewports (need 'static Send+Sync callbacks: the app state would have to move behind Arc<Mutex>); a second process per window (two engines, two libraries: no); detachable panels (Inspector/Setlist in their own windows: possible later, but the board is what people want on another screen); a whole second main window (duplicate menus and inspector for no gain).
+
+### D-223: A set window borrows the board for its pass: while it draws, handles its keys and takes its drops, the library's current set is that window's set (restored afterwards unless an action in it chose another set), and the per-board state (tile rects, Rows-grid drop map, held keys and pad, drag grab, glide animation, focus) is swapped in from the window's own copy. So tile keys typed in a set window play that set's pads, Enter/arrows run that window's cue list, Esc/Shift+Esc/Space work as in the main window, and files dropped on it land in its set. Menu commands (the macOS menu bar, the CLI, MIDI, OSC, global hotkeys) act on the main window's current set as before; a click on a pad selects it, which drives the main window's Inspector.
+
+*2026-11-02*
+
+**Why:** Every board function (grid, list, Panel pads, tile interaction, drops, key handling) reads the current set; swapping it for one pass reuses all of it unchanged instead of threading a set index through ~60 call sites, and keeps both themes' boards identical in both kinds of window.
+
+**Alternatives:** Thread a 'shown set' parameter through every board function (large diff, easy to miss one); render a read-only board in set windows (no: they must be playable).
+
+### D-224: Commands for windows are a window.* namespace (Live, CLI-mirrored): window.open {set?, x?, y?, width?, height?} (opens, or raises an open one), window.close {set | all}, window.list (main + set windows with their place, focus and whether the compositor reports positions), window.focus {set?} (none = main), window.move {set?, x?, y?, width?, height?} and window.gather (every set window back beside the main window, cascaded: the recovery when a monitor is gone). Menus: View > Open Set in New Window (checked while the current set has one), View > Gather Windows, and Open in New Window / Close Window in a set's right-click menu; a set open in a window has a window mark in the Setlist.
+
+*2026-11-02*
+
+**Why:** The registry groups by subject (tile.*, set.*, theme.*, view.*); windows are their own subject with several verbs, like theme.*, and window.list must be a query a script can read. gather is the cheap answer to a window restored onto a monitor that's no longer there.
+
+**Alternatives:** view.window {action: open|close|...} (one overloaded command, against the registry's one-verb-per-id style); set.window (windows aren't a set property).
+
+### D-225: Which sets are open in windows, and each window's place and inside size, are kept in the library (Library.json set_windows, in desktop logical points so they don't change with the zoom) and reopened at launch. On Wayland the compositor doesn't report or accept positions, so only the size is kept and the compositor places the window (Hyprland window rules can pin it to a workspace or monitor; that is the maintainer's to try). The main window's own place is not remembered (unchanged).
+
+*2026-11-02*
+
+**Why:** The maintainer asked for windows remembered and restored; logical points survive a zoom change; Wayland deliberately hides global positions from clients. Remembering the main window's place too is a separate change with its own off-screen risk; set windows have window.gather as the way back.
+
+**Alternatives:** egui/eframe persistence (needs the persistence feature and stores only the root); per-monitor placement by monitor index (with_monitor makes the window borderless fullscreen in egui-winit 0.37: wrong); storing egui points (would move with the zoom).
+
+### D-226: Screenshots of set windows: view.screenshot {path, window?} captures a set's window (window = a set ref) instead of the main one, and a LEADSTINGER_SNAPSHOT run also saves every open set window beside the main shot as NAME-window-N.png (N from 1 in set_windows order) before it quits. In background mode (D-214) a set window opens hidden, is made transparent and click-through on macOS like the main window, then shown, so it never comes in front.
+
+*2026-11-02*
+
+**Why:** UI checks need both windows; captures now carry their own paths, so frames from several windows can't be mixed up.
+
+**Alternatives:** Only the main window (the brief asks for both); one combined image (no API: each viewport renders separately).
+
+### D-227: Native Wayland file drops (D-108) are taken only over the main window: the drop handler compares the surface a drag enters with the main window's wl_surface and ignores drags over a set window (if the main surface can't be read, it takes every drag as before). On native Wayland, set windows don't take dropped files; on X11/XWayland and macOS each window takes its own drops.
+
+*2026-11-02*
+
+**Why:** The D-108 drops are fed into the main window's input with surface-local positions, so a file dropped on a set window would have landed in the main window's set at that position. The vendored smithay-clipboard already reports the entered surface; routing drops to set windows would need per-viewport input injection that eframe doesn't offer for immediate viewports.
+
+**Alternatives:** Route the drop into the set window's input (no hook for immediate viewports' raw input in eframe 0.37); leave it (wrong set gets the files).
+
+### D-228: macOS windows (main and set) use egui's transparent title bar with full-size content and hidden title; the traffic lights float over the top strip (Console toolbar, Panel top frame, in-window menu bar, set window bar), which leaves room measured from the real buttons (NSWindow standardWindowButton, fallback 68x28 pt, divided by the zoom), drags the window from its empty parts (ViewportCommand::StartDrag on a hidden background interact registered before the controls) and on double-click follows AppleActionOnDoubleClick (zoom by default, Minimize, None). Panel keeps its frame: the lights sit in the black corner outside the elbow. Full screen drops the inset. Linux and the test harnesses are untouched (titlebar::enable() only from main on macOS).
+
+*2026-11-02*
+
+**Why:** The maintainer (2026-11-02) wants the title bar integrated like the reference app, taking no extra space. Measuring the buttons keeps the room right across macOS versions; registering the drag area before the controls lets every button and menu keep its clicks; following the system double-click setting is what a native title bar does; hiding the drag node from AccessKit keeps the regions' names as SPEC lists them (screen readers move windows their own way).
+
+**Alternatives:** A fixed 78 pt inset (breaks if Apple changes the lights); movable_by_window_background (drags from pads too, fights pad drags); moving the traffic lights to centre them on the strip (private-ish NSWindow button frame fiddling, re-laid out by AppKit on resize); a taller Panel frame top to clear the elbow (spends space, the opposite of the ask).
+
+### D-229: Alt-click (Option on macOS) takes a selected pad out of the selection and leaves the rest selected; on an unselected pad it changes nothing, never plays and doesn't take the keyboard focus (focus would reselect it). Alt-drag copies, as Finder's Option-drag: with Alt held at the drop, the dragged pad or the selection dragged with it (D-219) stays put and copies go in at the target, placed on the board as it is (as files are: a gap, a blank, a slot past a row's end, a phantom row) or at a sidebar set's end (its own set too). Alt is read every frame, so pressing or letting go of it mid-drag switches move/copy until the drop. Preview: the floating pad gets a green '+' badge (meter green with a white ring, both themes) and the ghost slots are outlined green; the originals stay drawn. New registry command tile.copy {tile|tiles, to|row/slot/at/newRow, set} -> {set, tiles:[{tile, copyOf, position,row,slot}]}, one undo step; view.select gains remove (Alt-click). The originals stay selected after a copy. Locked sets refuse both ways (the generic lock check).
+
+*2026-11-02*
+
+**Why:** The maintainer 2026-11-02: alt-drag copies the selected pads, alt-click subtracts. A separate tile.copy reads better than tile.move copy:true because the placement means something different (the board as it is, nothing taken out) and the result returns new ids. Placing like files reuses grid::preview's file path, so the preview is exactly what the drop does. Keeping the originals selected lets a second Alt-drag copy them again; selecting the copies would also need cross-set selection.
+
+**Alternatives:** tile.move with copy:true; selecting the copies after the drop (Finder does); Alt-click on an unselected pad adding it; refusing copies out of a locked set only into one
+
+### D-230: Hotkeys of copies (tile.copy): a copy gets Tile::duplicate's rule, no hand-set key (it takes its slot's row key), except a copy that lands in another set where no tile has that key keeps it, still hand-set; the original always keeps its key.
+
+*2026-11-02*
+
+**Why:** Two pads can't share a key within a set, and keys are per set, so a key copied into a set where it's free is what the user most likely wants (copying a set's stingers to another set); inside one set a duplicate key would be ambiguous.
+
+**Alternatives:** always drop the key (as Duplicate); move the key to the copy
+
+### D-231: D-229: Console centres the macOS traffic lights on its top strip (toolbar, set window bar, in-window menu bar), keeping the left edges macOS measures (7/27/47 pt). titlebar.rs moves AppKit's own standardWindowButton views: it makes the title-bar container (the buttons' superview's superview) twice the strip centre's depth tall, pinned to the window top, and centres the buttons in it; it re-applies every frame (from drag_area) touching AppKit only when a frame moved, since AppKit lays them out again on resize/zoom/full-screen exit. The window is found by its title (each window's is unique). Full screen: buttons left to macOS (unhidden, frames untouched).
+
+*2026-11-02*
+
+**Why:** The maintainer (2026-11-02): centre them like the reference app. Moving the system buttons keeps their hover glyphs, clicks, AX and Window-menu behaviour; growing the container is the known way (Electron's trafficLightPosition does the same) so they aren't clipped at 28 pt. Per-frame re-apply needs no NSWindow delegate or notification observer.
+
+**Alternatives:** Draw our own lights in egui (loses system look/hover/AX); NSWindowDidResize observer (more objc glue, same effect since egui repaints on resize); NSToolbar with unifiedCompact style (centres lights but adds a native toolbar row that fights egui's layout).
+
+### D-232: D-230: Panel hides the traffic lights (setHidden on the three buttons) and shows them only while the pointer is in the window's top-left corner: the zone runs from the corner to 14 pt past the pill, right and down (main window at 100 %: 124 x 60 pt). Shown, they sit in a black pill the app draws on egui's Foreground layer: the three lights with 8 pt round them (70 x 32 pt, fully round ends). On the main window panel::lights_pill_at nests the pill in the top elbow's outer curve (cap 3 pt inside the R 64 curve, top at M + 6), so it stands on the orange as a pill of its own at every zoom (100 %: x 40, y 14); a set window's pill sits at 6,6 in its bar (inset room there = pill + 12 pt). The pointer is read from NSWindow.mouseLocationOutsideOfEventStream (the shown buttons eat egui's moves), with a 150 ms repaint while shown so it leaves with the pointer. LEADSTINGER_LIGHTS_SHOWN=1 forces it on for screenshots. No pill in full screen.
+
+*2026-11-02*
+
+**Why:** The maintainer (2026-11-02): no lights encroaching on the orange elbow; a black pill of their own, shown on hover in the upper-left corner. In the very corner (6,6) the pill merged into the frame's black edge and read as a notch, not a pill, so it moved inside the curve. Zone tied to the pill so it scales with it and stays clear of the timer block.
+
+**Alternatives:** Pill at 6,6 in the black margin (merges with the frame edge); fixed 90 x 44 pt zone (doesn't follow the pill at 200 %); alpha 0 instead of setHidden (buttons would still take clicks).
+
+### D-233: iPadOS renders through wgpu (Metal); glow stays on desktop, eframe renderer features become per-target
+
+*2026-11-02*
+
+**Why:** glutin 0.32 has no iOS backend (compile_error); wgpu runs egui on the iPad Pro simulator once the requested max_inter_stage_shader_variables is clamped to the adapter's (15 vs 16)
+
+**Alternatives:** glow via ANGLE (not supported by eframe), a separate iOS crate
+
+### D-234: iOS builds use a rustup toolchain (aarch64-apple-ios-sim, aarch64-apple-ios) outside nix develop; desktop stays in nix
+
+*2026-11-02*
+
+**Why:** The nix dev shell's rustc sysroot has no iOS std; the full crate cross-checks for iOS with only 12 errors (rfd, global-hotkey, mdns-sd, egui_glow); bindgen needs BINDGEN_EXTRA_CLANG_ARGS for the ios-sim triple
+
+**Alternatives:** add iOS std to the flake (rust-overlay), build in Xcode only
+
+### D-235: First iPad version: one window, touch + files + audio + CoreMIDI; no set windows, no control socket/CLI, no ffmpeg decoding; script-built .app for the simulator, Xcode project only for device
+
+*2026-11-02*
+
+**Why:** see docs/IPAD-PLAN.md: winit 0.30 iOS is single-scene, sandbox sockets are unreachable, egui-winit emulates the pointer from one finger only (multi-touch needs Event::Touch)
+
+**Alternatives:** Xcode project from the start
+
+### D-236: iPad distribution: sideload development-signed builds to the maintainer's own iPad (no TestFlight, no App Store for now)
+
+*2026-11-02*
+
+**Why:** The maintainer, 2026-11-02: 'Sideload to my iPad. I don't have it with me just yet, but I will in an hour or so.' The device will be plugged into the Mac for a development-signed install; model and iPadOS version still to learn.
+
+**Alternatives:** TestFlight; the App Store
+
+### D-237: A tap (finger down) on a pad plays it on iPadOS; the Inspector selection still follows the tap; further fingers play further pads via Event::Touch
+
+*2026-11-02*
+
+**Why:** The desktop's click-selects / double-click-plays does not suit a live soundboard on touch; egui-winit emulates the pointer from the first finger only
+
+**Alternatives:** keep double-tap to play; an explicit edit mode (against D-147 no modes)
+
+### D-238: rfd is a path crate (vendor/leadstinger-rfd): rfd on desktop, a UIDocumentPickerViewController stand-in on iPadOS, so app code is untouched; exports go to Documents/Exports
+
+*2026-11-02*
+
+**Why:** cargo forbids a dependency with different sources per target; the shim keeps the six rfd call sites unchanged
+
+**Alternatives:** cfg at every call site
+
+### D-239: Device builds go through a generated Xcode project (xcodegen) whose Run Script phase calls cargo; team id from LEADSTINGER_TEAM; installed with devicectl
+
+*2026-11-02*
+
+**Why:** Automatic signing needs an Xcode project to make the profile; keeping the Rust build in cargo avoids a second build system; the maintainer sideloads to his own iPad (M4 13-inch, paired as an available device when attached)
+
+**Alternatives:** cargo-xcodebuild, hand-made profile + codesign
+
+### D-240: The reference app ducking: a tile with 'ducked' becomes a bed (Duck::Ducked); when a set has any ducked tile, its other tiles become 'Ducks beds', since in the reference app any other tile playing dips a ducked one. The per-tile ducked level (duckedVolume) is dropped and reported: the library's duck amount applies.
+
+*2026-11-02*
+
+**Why:** Closest behaviour with our model, which has one library-wide duck depth and needs a Ducks tile to dip a bed.
+
+**Alternatives:** ducked → Ducked only (beds would never dip); setting the library duck depth from the tile (changes the user's library)
+
+### D-241: The reference app playerSettings mapping: fullVolume → volume (above 1 adds gain dB), fadeInTime/fadeOutTime → fades, loop, defaultToPause → Pausable, holdToPlay → Hold, playbackEnabled false → Disabled, solo; startPackets/endPackets → trim in seconds (packets × duration/packetCount; endPackets counts packets cut off the end, as the maintainer's 'Crowd Ambiance' 42/70 of 2589 shows). mode 1 → List (else Grid); playbackMode 2 → Continuous (seen on the reference app's list-mode set), else Queued; crossfadeDuration → cross-fade. Grid tiles go by gridPositionX/Y with blanks for gaps (and for skipped tiles); overlap or >12 columns falls back to list order. No hotkeys are imported: the reference app's are positional by row like ours, so the automatic keys match. Dropped and reported when set: favourite, tile icon, automations, play count, muted, output channels; unknown keys are listed as warnings.
+
+*2026-11-02*
+
+**Why:** Every mapping keeps the user's show behaving as in the reference app where our model has the setting; everything else is visible in the import result rather than silently lost.
+
+**Alternatives:** muted → volume 0; importing per-tile hotkeys (none in the export)
+
+### D-243: The reference app colorIndex → LeadStinger colour by nearest hue: 0 Purple, 1 Pink, 2 Red, 3 Orange, 4 Yellow, 5 Green, 6 Teal, 7 Blue; other indices keep the automatic colour and are reported. 0,1,2,3,5 observed in the reference app (the maintainer's sample sets, look only); 4,6,7 inferred from its hue order.
+
+*2026-11-02*
+
+**Why:** The reference app's colour menu can't be opened without taking the maintainer's screen; the maintainer's library uses only 0,1,2,3,5. The table is in SPEC.md and src/the reference app.rs COLORS; the maintainer can check 4/6/7.
+
+**Alternatives:** Ask the maintainer to read the menu out; map every index to the automatic colour
+
+### D-245: Each tile gets its own duck level (how far other sounds dip it), as the reference app has; the library's duck amount becomes the default a tile can override
+
+*2026-11-02*
+
+**Why:** The maintainer, 2026-11-02, asked after the the reference app import dropped a tile's own duck level: 'Yes, per-tile duck'.
+
+**Alternatives:** One library-wide duck amount (as until now); per-set duck amount
+
+### D-246: Naming the reference app in public is fine in the importer's docs and code (confirms D-244's leak-guard allowance)
+
+*2026-11-02*
+
+**Why:** The maintainer, 2026-11-02: 'It's okay to name the reference app in the docs with respect to the importer.' The product is named only as what the importer imports; the old UI-reference wording stays private.
+
+**Alternatives:** A generic 'another soundboard' wording in public docs
+
+### D-247: Per-tile duck level (D-245 implementation): Tile.duck_db Option<f32> in dB (-40..0, None = follow the library's duck_db, not written when None). The mixer's shared duck envelope becomes a depth 0..1; a bed plays at 1 - depth*(1 - its level), its own or the library's. Attack and release stay library-wide.
+
+*2026-11-02*
+
+**Why:** One envelope keeps every bed dipping and recovering together, so a talk-over still sounds like one move; for beds that follow the library the math is identical to the old gain envelope (no change in sound). Resolving None in the mixer each block means changing Settings' duck amount moves only the beds that follow it, live. Per-bed attack/release would need one envelope per voice and nobody asked for it; the reference app has one level per tile, not timing.
+
+**Alternatives:** Interpolate in dB (gain = level^depth): changes the curve of the existing library duck; per-voice envelopes with own attack/release; store the level as a linear factor like the reference app
+
+### D-248: The reference app import: duckedVolume becomes the bed's own duck level, 20*log10(v) rounded to 0.1 dB; a missing key reads as the reference app's default 0.4 (-8.0 dB), 0 or under 0.01 is -40 dB (the floor), above 1 is 0 dB. Every imported bed gets its own level, the default one included.
+
+*2026-11-02*
+
+**Why:** The import's aim is that the set sounds as it did in the reference app, and the reference app's 0.4 is -8 dB, not LeadStinger's -12 dB default; leaving default-valued beds on None would make them dip 4 dB deeper than in the reference app. Default reverts any bed to the library amount in one click.
+
+**Alternatives:** Only non-default duckedVolume values as own levels (0.4 → follow library); map 0.4 to None and rescale the rest relative to -12 dB
+
+### D-249: Command and inspector shape for the per-tile duck level: tile.set duckLevel (camelCase like gainDb; duck_level accepted as an alias) takes dB -40..0, a number as text, or default/null; tile.get/list answer duck_level as dB or "default". The inspector's Play tab shows Duck to (a rail in dB) under Ducking only for a bed, with a row under it: a Default button once it has its own level, else the weak note 'Follows Settings'; a selection of beds shares it with a dash where they differ.
+
+*2026-11-02*
+
+**Why:** Matches tile.set's camelCase params and tile.get's snake_case answers; 'default' mirrors channels' 'auto'. The second row (like Normalise under Gain) keeps the rail its room (D-211): inline the Default button wrapped and left a gap. The control only matters for beds, so it isn't shown for other tiles.
+
+**Alternatives:** duck_level only; null in tile.get for the default; a checkbox 'own level'; showing the effective library value in the rail label
+
+### D-250: The reference app colour table confirmed: colorIndex 0 purple→Purple, 1 pink/magenta→Pink, 2 red→Red, 3 orange→Orange, 4 yellow→Yellow, 5 green→Green, 6 teal→Teal, 7 blue→Blue (all three inferred guesses 4/6/7 were right; no table change)
+
+*2026-11-02*
+
+**Why:** Checked in the reference app 2.2 on 2026-11-02: a scratch set with one tile per colorIndex 0-7, each tile's swatch read in the reference app's window, set deleted afterwards. A set holding indices 8-11 crashed the reference app at load (stack overflow), so its palette is eight colours and the importer's warning for any other index stays. The export-via-save-panel route was not possible in the background (file panels ignore background clicks), so the indices were written into the scratch set's library file and read back by eye; same mapping either way.
+
+**Alternatives:** (left out of the public snapshot)
+
+### D-251: The reference app's dropped settings: option B. A real Mute pad option, an emoji badge beside the tile title (monochrome), and the reference app's output channel pair mapped onto an existing LeadStinger Output; no bundled colour-emoji font
+
+*2026-11-04*
+
+**Why:** The maintainer, 2026-11-04: 'B, recommended' (the follow-ups session's recommendation in docs/the reference app-IMPORT.md 'Not yet imported').
+
+**Alternatives:** A: import-only (emoji as title prefix, muted as volume 0, channels by pair); C: B plus colour emoji rasterised into the tile Picture with a ~10 MB bundled font
+
+### D-252: Mute (D-251 implementation): Tile.muted bool (written only when true); Tile::gain() returns 0 while muted so every send plays silent and a live toggle ramps like a volume change; timing, cue links, ducking (a muted ducker still ducks, a muted bed still dips) and Solo are untouched. PadOption::Muted is a badge (first in BADGES, nearest the corner, the last to drop on a narrow pad) and the speaker toggle between the inspector's Volume label and slider (red with a cross when on; mixed for a selection), not one of the big option buttons. Tile menu Mute/Unmute (edit part, so not in a locked set). tile.set muted, tile.get/list muted. Exporting audio ignores mute (render one_pass unmutes): Mute is a live-show state.
+
+*2026-11-04*
+
+**Why:** The reference app puts its mute beside the volume slider; keeping the level means unmuting restores the reference app's level. Zero gain in Tile::gain keeps one code path for play, live updates and meters. Rendering a muted tile to silence would never be what someone exporting audio wants.
+
+**Alternatives:** A sixth big option button (crowds the row, and mute belongs with volume); muting by skipping voices (would lose timing and ducking); volume 0 (loses the level)
+
+### D-253: Emoji badge (D-251 implementation): Tile.emoji String (only emoji: model::is_emoji / emoji_only, pictograph ranges plus joiner, variation selectors, keycaps, flags' tags; at most 24 chars; written only when set; normalize filters). Drawn inline before the title as one text run (same font, size, colour, wrapping) in both themes; left off when the title has under 64 pt of room, and an emoji egui's bundled NotoEmoji lacks (Unicode 11+: parrot, safety vest, skin tones) is skipped on the pad instead of drawing a box. Inspector: a 40 pt Emoji field before the title that filters to emoji as you type. tile.set emoji (non-emoji or too long = bad_params; empty/null clears), tile.get/list answer emoji. Not in the pad's accessible name or hover card; not drawn in the cue list. The reference app tileIcon: the emoji strings joined in order; a non-emoji or non-string entry is left out and counted as 'a tile icon that isn't an emoji'.
+
+*2026-11-04*
+
+**Why:** Inline text is the least code and sizes/wraps with the title for free. Screen readers read an emoji's long Unicode name ('dog face') before the title, which reads badly on every pad, and the title already names the tile. Skipping undrawable glyphs avoids tofu boxes while keeping the data for a later colour/newer font.
+
+**Alternatives:** A separate badge glyph in the corner (competes with option badges); emoji in the spoken name (noisy); rejecting emoji the font lacks (loses the reference app data)
+
+### D-254: The reference app channel mapping (D-251 implementation): playerSettings.channels is read as 0 = Auto, otherwise the output channel from 1 (as docs/the reference app-IMPORT.md had it), not 0-based. [0,0] changes nothing; [1,2] is Main; [n,n+1] goes to the library's first Output whose first channel is n (tile.output, so sends follow); anything else (no such output, mono, gap, reversed, Auto on one side) plays on Main and is reported as 'channels L/R: no matching output (k tiles)'. Matched in the reference app::convert, which now takes the library's outputs from setfile::import; no model change, no outputs created.
+
+*2026-11-04*
+
+**Why:** The reference app's channel popups start with Auto at 0, so the 1-based reading fits both Auto and a real first pair; LeadStinger outputs are pairs named by their first channel, so n/n+1 is the only shape that maps cleanly. The device isn't in the export, so channel numbers are all there is to match.
+
+**Alternatives:** 0-based indices (the coordinator's brief said so; would put [2,3] on channels 3/4 — flip output_for if a multichannel check shows the reference app counts from 0); creating outputs on import (changes settings, guesses the device)
+
+### D-255: The coordinator (or the session that started a side session) starts each lane's ingestion when it is done with it: it has the side session run close-session, or runs distill-sessions.sh with DISTILL_ONLY for that lane itself. No lane is archived before it is ingested. The over-the-usage-limit fallback to the nightly distiller is dropped.
+
+*2026-11-09*
+
+**Why:** (left out of the public snapshot)
+
+**Alternatives:** Re-enable the nightly distiller and keep the fallback.
+
+### D-256: Release main as 0.3.0
+
+*2026-11-10*
+
+**Why:** The maintainer, 2026-11-10: 'Release as 0.3.0', after hearing what main holds beyond 0.2.1 (set windows, integrated title bar, Alt-drag copy, the reference app import, per-tile duck, Mute, emoji, iPadOS first build). His own live checks (title bar feel, duck levels by ear, Hyprland set windows, iPad install) are not done.
+
+**Alternatives:** Wait for the maintainer's live checks; 0.2.2
+
+18 decisions about private infrastructure and the gift edition are left out of the public snapshot: D-013, D-015, D-023, D-030, D-031, D-033, D-036, D-037, D-038, D-130, D-137, D-138, D-139, D-162, D-174, D-186, D-242, D-244.
 
 ## Tests
 
 | Module | Tests | What they cover |
 |---|---|---|
-| app | 63 | hotkey key map, glyph coverage, grid column fit (fit_columns) |
-| app::a11y_tests | 40 | egui_kittest over the real window: every screen in Console and Panel has no unnamed, role-less or unhinted control, no panel VoiceOver can't enter (Pane), no slider without orientation, no control named by its hover text or by a symbol (KNOWN_GAPS empty); a tile's hover card; live labels (tile incl. loops, playing tile, set, cue row, GO, master volume, trim handles, menu check item, transport counter, Toolbar/Sets/Board/Status bar regions); keyboard use of grid and cue list; the set-file dialog (named); live-region announcements. Lib total 212 on macOS (both brands). |
+| app | 68 | hotkey key map, glyph coverage, grid column fit (fit_columns) |
+| app::a11y_tests | 44 | egui_kittest over the real window: every screen in Console and Panel has no unnamed, role-less or unhinted control, no panel VoiceOver can't enter (Pane), no slider without orientation, no control named by its hover text or by a symbol (KNOWN_GAPS empty); a tile's hover card; live labels (tile incl. loops, playing tile, set, cue row, GO, master volume, trim handles, menu check item, transport counter, Toolbar/Sets/Board/Status bar regions); keyboard use of grid and cue list; the set-file dialog (named); live-region announcements. Lib total 212 on macOS (both brands). |
 | app::editor (+ a11y_tests) | 4 | view fit/zoom-around-pointer/pan/clamp, ruler tick steps, zero-crossing snap (editor.rs); the editor driven from the keyboard: Alt+Right one-sample nudge, typed ms and sample times, + and − zoom, closing on reselect, action tiles refused (a11y_tests); the a11y walk gains an 'editor' screen in both themes; controller marker test covers tile.markerMove. Lib total 216 on macOS (both brands). |
-| audio | 40 | mixer: end, trim, loop+fade, fade-in, pause, solo, resample, clamp, peaks, gain above unity, limiter, ducking, talk-over, vamp, fade shapes, speed, markers, routing |
+| audio | 42 | mixer: end, trim, loop+fade, fade-in, pause, solo, resample, clamp, peaks, gain above unity, limiter, ducking, talk-over, vamp, fade shapes, speed, markers, routing |
 | audio + control + controller (mic lock, cpal 0.18) | 4 | audio::picks_configs_as_cpal_0_15_did (I16 over I32/I24, stereo, 44.1 kHz, unbuildable formats skipped); audio::lists_alsa_devices_as_cpal_0_15_did (Linux only: numeric hw:/plughw: twins and null dropped); control::a_microphone_prompt_doesnt_hold_up_commands (real socket, an opener blocking like the macOS prompt: duck.voice/status/set.create/input.list each answer < 1 s; fails with os error 35 after 30 s if the open goes back under the lock); controller::a_recording_waits_for_the_input_to_open (allowed: starts at the input's rate with its notice; denied: new tile removed, reason shown). Lib total 227 on macOS (both brands), 229 on the home server; 232 listed with the CLI tests on macOS. |
 | background | 1 |  |
 | bindings + hotkeys | 4 | MIDI message parsing, source shorthand/matching/describe, press/release/fader invocations, note names and port filters; key combination parsing and ids |
@@ -1699,9 +1964,10 @@ Each decision with its reasoning and the alternatives that were turned down.
 | cli (tests/cli.rs) | 5 | The real binary: offline library commands, exit codes 2-5, --safe, ambiguity; online trigger/status/watch/run against an in-process socket; set files between two libraries |
 | commands | 5 | unique ids, unique shortcuts, menu args, docs/CLI.md is up to date, undoable commands are library commands |
 | control | 4 | short socket paths, socket round-trip + events + waiting while the window holds the Controller, exclusive library lock |
-| controller | 69 | every command implemented; tile refs and ambiguity; play/stop/cue; tile.set validation and hotkeys; sets and view; pickers as effects; gain and normalise; ducking; undo/redo with coalescing and held media; MIDI bindings, learn, faders, auto-map; system-wide key bindings |
+| controller | 74 | every command implemented; tile refs and ambiguity; play/stop/cue; tile.set validation and hotkeys; sets and view; pickers as effects; gain and normalise; ducking; undo/redo with coalescing and held media; MIDI bindings, learn, faders, auto-map; system-wide key bindings |
 | controller (OSC level feedback) | 1 | controller::osc_feedback_sends_tile_levels_ten_times_a_second: against a local UDP socket, a stopped tile sends level 0; a 0.4 tone reads 0.65-0.8; while the level falls (master 0.1) 0.6 s of 50 fps ticks sends 5-7 strictly falling /ls/tile/1/level values; a 0 for /ls/tile/1/level and /ls/now/level on the tick the tile stops; osc.enable --levels false sends 0 once then no /level addresses, and osc.status reports it. On a64ef4f: lib total 271 on macOS (both brands), 277 listed with the CLI tests; 273 lib on the home server. |
 | decode | 12 | mono WAV to stereo, non-audio rejected, FLAC front cover; BS.775 downmix gains (mono, stereo, 5.1 rear/side, 7.1, empty layout, other positions) and a decoded 6-channel extensible WAV |
+| The reference app | 7 |  |
 | input | 3 | voice detector follows the level and gates with a hold |
 | leadstinger-cli (bin) | 1 | shell-style word splitting for --ssh and scripts |
 | level | 3 | peak in dBFS, EBU R128 loudness of a sine, silence and trimmed regions |
@@ -1712,7 +1978,7 @@ Each decision with its reasoning and the alternatives that were turned down.
 | menu + native_menu + controller + mac_drop + a11y harness | 5 | menu::the_menu_shape_never_depends_on_the_state, menu::stop_recording_takes_record_new_tiles_slot, controller::inputs_are_listed_once_the_input_is_wanted, mac_drop::the_pointer_follows_a_file_drag_and_its_drop, a11y_tests::a_finder_drop_lands_on_the_tile_under_it. main 18409ee: 276 lib + 6 on macOS (both brands), 282 listed; 278 lib + 6 on the home server. 0.3.0 port a707425: 221 lib + 6 on macOS (both brands), 227 listed; 223 lib + 6 on the home server. |
 | messages | 3 | parsing and sending tiles' OSC/MIDI start and stop messages |
 | midi hot-plug (tests/midi_hotplug.rs) | 1 | midi_ports_come_and_go: the real `serve --silent`; a child process (helper_controller, ignored on its own) publishes a virtual source and destination after launch: midi.ports lists and connects it within 6 s (1.5 s seen), a tile's onStart midi:note reaches the late destination, unplug drops it (1.8 s), replug restores it (2.0 s). Skips where MIDI can't open (the home server's plain linux-check: the maintainer not in audio); run with -g audio there it passes on ALSA. On 1dc3763: lib 271 on macOS (both brands), 279 listed with the CLI tests; 0.3.0 port 200c349: 216 lib macOS, 218 the home server. |
-| model | 17 | JSON round-trip, defaults, normalize (incl. gain range), embedded-art rules, gain = volume x dB |
+| model | 21 | JSON round-trip, defaults, normalize (incl. gain range), embedded-art rules, gain = volume x dB |
 | model + logic + starter + setfile + controller + controller::export + a11y_tests + tests/cli.rs | 7 | D-161, D-163..D-166. model: fades_resolve_tile_then_set_then_library_then_none, version_4_fades_become_default_and_older_builds_still_read_them. logic: the end fade keeps its own shape. starter: pack_fades_read_by_manifest_version. setfile round trip: the set's own fade, the library's baked in, own/Default/own hard stop. controller: default_fades_reach_every_tile_on_default (CLI, from-reporting, live push via Solo, null/library, shape alone, undo, bad values, lock). export: a_render_uses_the_default_fades. a11y: default_fades_have_named_controls_in_both_looks (Console + Panel). tests/cli.rs: offline default fades. On 62434a8: lib 336 on macOS (both brands), 345 listed. |
 | osc | 1 | flattens bundles and simplifies arguments |
 | pads | 2 | pad paging and tile-colour to pad-colour mapping |
@@ -1727,11 +1993,11 @@ Each decision with its reasoning and the alternatives that were turned down.
 | setfile | 9 | export then import keeps every tile and set setting; a new library's untouched Set 1 is replaced, a touched one kept; a zipped folder imports and zip-slip entries are refused; safe, unique names |
 | starter | 3 | manifest pack fills an empty library once (hotkeys, colours, modes, missing and outside paths, marker, reload); folders without a manifest; a full library and an empty folder are left alone; search order |
 | store | 10 | import/reload/cleanup, shared media, corrupt library, user pictures |
-| theme | 9 | theme: tokens equal the FigCraft exports (status colours excluded, D-120); colour helpers; WCAG AA of every pair in each built-in look incl. status pairs (theme::contrast); the icon decodes (5). themes: built-ins round-trip token for token (incl. status tokens and the veil's alpha); bundled assets/themes files equal what the built-ins write; docs/design exports load as themes; partial themes fall back; status colours are themeable (modes, Panel without ui/, veil alpha); Panel tokens follow the palette; import/export/remove; the Harbor example is warning-free with its status colours; slugs (9). controller::themes: commands, restart, hot reload (list follows a rename), remove (1). menu: View ▸ Theme lists installed themes (1); a11y: view_theme_lists_imported_themes (1). On 95065fd: lib total 270 on macOS (both brands), 276 listed with the CLI tests; 272 lib on the home server. |
+| theme | 10 | theme: tokens equal the FigCraft exports (status colours excluded, D-120); colour helpers; WCAG AA of every pair in each built-in look incl. status pairs (theme::contrast); the icon decodes (5). themes: built-ins round-trip token for token (incl. status tokens and the veil's alpha); bundled assets/themes files equal what the built-ins write; docs/design exports load as themes; partial themes fall back; status colours are themeable (modes, Panel without ui/, veil alpha); Panel tokens follow the palette; import/export/remove; the Harbor example is warning-free with its status colours; slugs (9). controller::themes: commands, restart, hot reload (list follows a rename), remove (1). menu: View ▸ Theme lists installed themes (1); a11y: view_theme_lists_imported_themes (1). On 95065fd: lib total 270 on macOS (both brands), 276 listed with the CLI tests; 272 lib on the home server. |
 | theme + controller + model + a11y_tests | 3 | D-152/D-158..D-160. theme::pad_faces_by_mode (both faces' fills for all 16 colours, normal and HC; titles reach 4.5 / 7:1 and are lightened no further than needed); controller::coloured_pads_setting_round_trips (toggle, set, saved and reopened); a11y::the_editor_of_a_locked_tile_is_read_only (Console and Panel: banner, handles disabled sliders named read-only, 15 controls disabled with the lock reason, Preview/selection/Jump live, tile unchanged, Unlock restores); model: older libraries read Coloured pads off; contrast check covers both pad faces. On 2dc5e49: lib 330 on macOS (both brands), 339 listed; 332 lib on the home server. |
 | transcode (+ store, setfile, demo on that branch) | 5 | when to convert, extensions, install hint, finding ffmpeg (setting/PATH/usual folders), ffmpeg clocks and errors (5). On the branch also: store +2 (5.1 AC-3 and MKV through ffmpeg keep 6 channels/only audio; cancel and a bad file), setfile +1 (AC-3 in a zipped set file), demo +1 (every demo tile decodes). Lib total 171 on macOS, 172 on the home server. |
 | waveform | 6 | pyramid range vs brute force on random audio, level counts, columns zoom/clamp/overflow/degenerate, zero crossings |
-| **total** | **458** | |
+| **total** | **486** | |
 
 ## Platforms
 

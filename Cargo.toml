@@ -1,6 +1,6 @@
 [package]
 name = "leadstinger"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.95"
 description = "LeadStinger, a cross-platform soundboard for live use"
@@ -14,10 +14,11 @@ exclude = ["/gift", "/dist", "/docs/design/*.figcraft"]
 
 [dependencies]
 anyhow = "1"
+# rfd on desktop; on iPadOS a file picker with the same API (UIDocumentPickerViewController).
+rfd = { package = "leadstinger-rfd", path = "vendor/leadstinger-rfd" }
 cpal = "0.18.2"
 directories = "5"
 # System-wide keys: Carbon hotkeys on macOS, XGrabKey in X11 sessions (src/hotkeys.rs).
-global-hotkey = "0.9"
 # OSC control (src/osc.rs, D-042).
 rosc = "0.11"
 # MIDI input (CoreMIDI on macOS, the ALSA sequencer on Linux).
@@ -27,8 +28,9 @@ signalsmith-stretch = "0.1"
 # EBU R128 loudness for tile.normalize (pure Rust).
 ebur128 = { version = "0.1", default-features = false }
 # glow (OpenGL) rather than eframe's default wgpu renderer: the Linux packages ship
-# Mesa's GL stack, and every platform check so far ran on glow (D-050).
-eframe = { version = "0.37", default-features = false, features = ["accesskit", "clipboard", "default_fonts", "glow", "links", "wayland", "x11"] }
+# Mesa's GL stack, and every platform check so far ran on glow (D-050). The renderer, the
+# clipboard and the window-system features are per target below; iPadOS has wgpu (Metal).
+eframe = { version = "0.37", default-features = false, features = ["accesskit", "default_fonts"] }
 # Only for this feature, so keep it the same version as eframe: since egui 0.37 its own
 # symbol and emoji fonts (⌘ ✚ ⚙ ▶ ⏹ ⚠ ✔ …) are opt-in, in favour of system fonts (D-050).
 egui = { version = "0.37", default-features = false, features = ["monochrome_emoji_fonts"] }
@@ -36,7 +38,6 @@ egui = { version = "0.37", default-features = false, features = ["monochrome_emo
 # the parser egui itself uses, at the same version (D-106).
 skrifa = { version = "0.44", default-features = false, features = ["std"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
-rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 symphonia = { version = "0.5", features = ["all"] }
@@ -50,6 +51,8 @@ url = "2"
 # Finding QuipClipper on the local network (src/quip/discover.rs, D-134): mDNS/DNS-SD,
 # pure Rust, no async runtime.
 mdns-sd = { version = "0.21", default-features = false }
+# Reading Farrago set exports (src/farrago.rs): XML and binary property lists (MIT).
+plist = { version = "1", default-features = false }
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 flacenc = { version = "0.5.1", default-features = false }
 
@@ -73,12 +76,12 @@ muda = { version = "=0.21.2", default-features = false }
 # Turn off AppKit's automatic window tabbing (its "Show Tab Bar" items in View).
 # Same versions winit already uses.
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSWindow", "NSPasteboard", "NSPasteboardItem", "NSView", "NSEvent"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSWindow", "NSPasteboard", "NSPasteboardItem", "NSView", "NSEvent", "NSButton", "NSControl"] }
 # The window's view, to read where a Finder drag is (src/mac_drop.rs). Same version eframe uses.
 raw-window-handle = "0.6"
 # Reading file URLs off the pasteboard (paste to import); leadstinger:// links arrive as
 # Apple Events (src/quip.rs).
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSEnumerator", "NSAppleEventManager", "NSAppleEventDescriptor", "NSNotification", "NSURL"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSEnumerator", "NSAppleEventManager", "NSAppleEventDescriptor", "NSNotification", "NSURL", "NSUserDefaults"] }
 # The run loop CoreMIDI's device notifications arrive on (src/midi.rs, D-123). The same
 # crate midir's CoreMIDI backend already pulls in.
 core-foundation-sys = "0.8"
@@ -100,6 +103,21 @@ futures-channel = "0.3"
 # Native Wayland file drops (D-108): the clipboard crate egui-winit already uses there,
 # in LeadStinger's copy with drag-and-drop handlers (vendor/smithay-clipboard).
 smithay-clipboard = "0.7.3"
+
+# Desktop only: the glow renderer, the clipboard and links, Wayland and X11, system-wide
+# keys and the native file dialogs. iPadOS has none of them (docs/IPAD-PLAN.md): its
+# renderer is wgpu on Metal, its file dialog is the shim in vendor/leadstinger-rfd, and
+# src/ios/hotkeys.rs stands in for src/hotkeys.rs.
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+eframe = { version = "0.37", default-features = false, features = ["accesskit", "clipboard", "default_fonts", "glow", "links", "wayland", "x11"] }
+global-hotkey = "0.9"
+
+[target.'cfg(target_os = "ios")'.dependencies]
+eframe = { version = "0.37", default-features = false, features = ["accesskit", "default_fonts", "wgpu"] }
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSArray", "NSURL", "NSError", "NSFileManager", "NSPathUtilities"] }
+objc2-avf-audio = { version = "0.3", default-features = false, features = ["std", "AVAudioSession", "AVAudioSessionTypes"] }
+raw-window-handle = "0.6"
 
 [patch.crates-io]
 smithay-clipboard = { path = "vendor/smithay-clipboard" }

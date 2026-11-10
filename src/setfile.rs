@@ -54,9 +54,11 @@ pub const MIME_XML: &str = include_str!("../assets/linux/leadstinger-set.xml");
 const MAX_ENTRIES: usize = 20_000;
 const MAX_TOTAL_BYTES: u64 = 8 << 30;
 
-/// A `.lsset` file, or a `.zip` (what a file manager makes of a pack folder).
+/// A `.lsset` file, a `.zip` (what a file manager makes of a pack folder), or a
+/// Farrago export (`.farragoset`, a folder or file; src/farrago.rs).
 pub fn is_set_file(path: &Path) -> bool {
     path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case(EXTENSION) || e.eq_ignore_ascii_case("zip"))
+        || crate::farrago::is_export(path)
 }
 
 /// A set file unpacked into a temporary folder, removed again when this is dropped.
@@ -126,6 +128,8 @@ fn unzip(file: &Path, dir: &Path) -> Result<()> {
 pub struct Import {
     pub sets: Vec<ImportedSet>,
     pub theme: Option<std::result::Result<themes::Imported, String>>,
+    /// A Farrago export: what came across and what didn't.
+    pub farrago: Option<crate::farrago::Report>,
 }
 
 /// One set `set.import` added.
@@ -138,7 +142,8 @@ pub struct ImportedSet {
 
 /// Import every set in a set file or pack folder, appended after the library's sets. A
 /// name that's already taken gets a number ("Bridge 2"). A new library's untouched
-/// "Set 1" is replaced rather than left empty above the imported sets.
+/// "Set 1" is replaced rather than left empty above the imported sets. A Farrago export
+/// (folder or zip) is read into the same form first (src/farrago.rs).
 pub fn import(store: &mut Store, path: &Path) -> Result<Import> {
     // An unpacked set file stays until its clips are copied or converted into Media.
     let mut unpacked = None;
@@ -149,7 +154,15 @@ pub fn import(store: &mut Store, path: &Path) -> Result<Import> {
     } else {
         bail!("{} doesn't exist", path.display());
     };
-    let manifest = load_manifest(&dir)?;
+    let (mut dir, mut farrago) = (dir, None);
+    let manifest = match crate::farrago::root(&dir) {
+        Some(root) => {
+            let (manifest, report) = crate::farrago::convert(path, &root, &store.library.outputs)?;
+            (dir, farrago) = (root, Some(report));
+            manifest
+        }
+        None => load_manifest(&dir)?,
+    };
     if manifest.version.is_some_and(|v| v > VERSION) {
         eprintln!("{}: {} is from a newer version; importing what this one understands", crate::brand::SLUG, path.display());
     }
@@ -184,6 +197,9 @@ pub fn import(store: &mut Store, path: &Path) -> Result<Import> {
             store.library.sets.insert(0, set);
             store.library.selected_set = selected;
         }
+        if let Some(first) = farrago.as_ref().and_then(|r| r.skipped.first()) {
+            bail!("{} has no playable sounds (“{}”: {})", path.display(), first.title, first.reason);
+        }
         bail!("{} has no sets with playable clips", path.display());
     }
     if blank.is_some() {
@@ -191,7 +207,15 @@ pub fn import(store: &mut Store, path: &Path) -> Result<Import> {
     }
     store.mark_dirty();
     let theme = manifest.theme_file.as_deref().map(|file| install_theme(store, &dir, file));
-    Ok(Import { sets: imported, theme })
+    // A tile the library refused after all (its sound couldn't be read) is skipped too.
+    if let (Some(report), Some(Some((_, ids)))) = (farrago.as_mut(), placed.first()) {
+        let refused: Vec<usize> = ids.iter().enumerate().filter(|(_, id)| id.is_none()).map(|(i, _)| i).collect();
+        for i in refused.into_iter().rev() {
+            let title = report.imported.remove(i);
+            report.skipped.push(crate::farrago::Skipped { title, reason: "its sound couldn't be read".into() });
+        }
+    }
+    Ok(Import { sets: imported, theme, farrago })
 }
 
 /// Install the theme a set file carries, replacing an installed one of the same name.
@@ -353,6 +377,7 @@ pub fn export(store: &mut Store, set_idxs: &[usize], path: &Path) -> Result<Expo
             pack.tiles.push(PackTile {
                 file,
                 title: Some(t.title.clone()),
+                emoji: t.emoji.clone(),
                 // Only a key set by hand: the others come from the slot (version 3).
                 hotkey: t.hotkey_manual.then(|| t.hotkey.map(PadKey::name).unwrap_or_default()),
                 color: enum_name(t.color),
@@ -362,11 +387,13 @@ pub fn export(store: &mut Store, set_idxs: &[usize], path: &Path) -> Result<Expo
                 one_shot: t.press.one_shot.then_some(true),
                 looping: t.looping,
                 volume: Some(t.volume),
+                muted: t.muted,
                 gain_db: t.gain_db,
                 speed: (t.speed != 1.0).then_some(t.speed),
                 pitch: (t.pitch != 0.0).then_some(t.pitch),
                 output: (!t.sends.is_empty()).then(|| t.output().to_owned()),
                 duck: (t.duck != Duck::None).then(|| enum_name(t.duck)).flatten(),
+                duck_db: t.duck_db,
                 fade_in: t.fade_in,
                 fade_out: t.fade_out,
                 stop_fade: (t.stop_fade != t.fade_out).then_some(t.stop_fade),
@@ -519,14 +546,17 @@ mod tests {
         store.set_image(ids[0], &png).unwrap();
         let t = store.library.tile_mut(ids[0]).unwrap();
         t.title = "Air Horn!".into();
+        t.emoji = "📯".into();
         t.color = TileColor::Crimson;
         t.hotkey = Some(PadKey { key: 'h', alt: true });
         t.hotkey_manual = true;
         t.press = crate::model::PressOptions { hold: true, pausable: true, one_shot: false };
         t.looping = true;
         t.volume = 0.5;
+        t.muted = true;
         t.gain_db = 4.5;
         t.duck = Duck::Ducked;
+        t.duck_db = Some(-20.0);
         t.fade_curve = FadeCurve::EqualPower;
         t.speed = 1.25;
         t.pitch = -2.5;
@@ -585,9 +615,9 @@ mod tests {
                 (&x.title, x.color, x.hotkey, x.press, x.looping, x.volume, x.fade_in, x.fade_out, x.stop_fade, x.solo, x.start, x.end),
                 (&y.title, y.color, y.hotkey, y.press, y.looping, y.volume, y.fade_in, y.fade_out, y.stop_fade, y.solo, y.start, y.end)
             );
-            assert_eq!((x.gain_db, x.duck, x.vamp, x.fade_curve, x.speed), (y.gain_db, y.duck, y.vamp, y.fade_curve, y.speed));
+            assert_eq!((x.gain_db, x.duck, x.duck_db, x.vamp, x.fade_curve, x.speed), (y.gain_db, y.duck, y.duck_db, y.vamp, y.fade_curve, y.speed));
             assert_eq!(x.markers, y.markers);
-            assert_eq!((x.pitch, &x.notes, x.disabled), (y.pitch, &y.notes, y.disabled));
+            assert_eq!((x.pitch, &x.notes, x.disabled, x.muted, &x.emoji), (y.pitch, &y.notes, y.disabled, y.muted, &y.emoji));
             assert_eq!((x.pre_wait, x.link, x.post_wait), (y.pre_wait, y.link, y.post_wait));
             assert_eq!((&x.on_start, &x.on_stop), (&y.on_start, &y.on_stop));
             assert_eq!((x.image.is_some(), x.image_layer, x.image_opacity), (y.image.is_some(), y.image_layer, y.image_opacity));

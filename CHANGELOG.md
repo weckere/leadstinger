@@ -6,6 +6,82 @@ All notable changes to LeadStinger. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-10
+
+### Added
+
+- **Farrago imports keep a tile's output channels** when the library has an output on
+  that channel pair (Settings ▸ Outputs): a tile Farrago played on channels 3 and 4 plays
+  on the output that starts at channel 3. A pair no output has plays on Main and is named
+  in the import's result.
+- **An emoji on a tile.** A tile can carry an emoji or a few, drawn before its title on
+  the pad in both themes (in the title's colour; a narrow pad leaves them off). Set them
+  in the inspector's Emoji field beside the title (paste them or use the system's emoji
+  picker; only emoji are kept), or `tile.set --emoji 🐕`; `tile.get` answers `emoji`. One
+  undo step; saved in the library and set files. A Farrago import keeps each tile's emoji.
+- **Mute a tile.** A speaker beside the inspector's volume slider (and Mute / Unmute in
+  the tile menu) silences a tile while keeping its volume: it still starts, keeps its
+  time and cue links, ducks beds and solos, at no level. The pad shows a muted-speaker
+  badge in both themes, and its hover text and screen-reader name say "muted". One undo
+  step; saved in the library and set files; `tile.set --muted true`, and `tile.get`
+  answers `muted`. A Farrago import keeps each tile's mute.
+- **Each bed has its own duck level.** A tile marked as a bed shows **Duck to** in the
+  inspector's Play tab: how far it dips while something ducks it, −40 to 0 dB. Left alone
+  it follows the duck amount in Settings, which is now the default; Default puts it back.
+  Several beds selected share the control, with a dash where they differ. Saved in the
+  library and in set files; `tile.set --duckLevel -20` (or `default`), and `tile.get`
+  answers `duck_level`. A Farrago import keeps each ducked tile's own level.
+- **Option/Alt-drag copies pads.** Hold Option (macOS) or Alt (Linux) while dragging a
+  pad, or a selection dragged together, and copies go in where it's dropped (a gap, a
+  blank, a row's end, a new row, or a set in the setlist) while the originals stay put.
+  The dragged pad shows a green "+" while Alt is held, and pressing or letting go of
+  Alt during the drag switches between moving and copying. One undo step. New command
+  `tile.copy`.
+- **Option/Alt-click takes a pad out of the selection**, leaving the rest selected
+  (`view.select` with `remove`).
+- **iPadOS (first build).** LeadStinger builds for iPad (`scripts/ios-build.sh`,
+  README) and runs in the iPad simulator: the board in both themes, in either
+  orientation and kept clear of the status bar and home indicator, a finger on a pad
+  plays it (several fingers play several pads, and a Hold pad plays while its finger is
+  down), the Setlist and Inspector, the library in the app's Documents folder (shown in
+  the Files app), Add Sounds and Import through the Files picker, and audio that mixes
+  with other apps. It draws with Metal through wgpu (glow has no iOS backend). Not in
+  this build: set windows, `leadstinger-cli`, system-wide keys, ffmpeg decoding, opening
+  a set file from another app. Desktop builds are unchanged.
+- **Import sets from Farrago.** File ▸ Import Set…, `set.import` and dropping one on the
+  window take a Farrago set export (`.farragoset`, the folder or the same zipped): it
+  becomes a new set, with each tile's sound, title, colour, place in the grid (or list
+  order), notes, Hold, Pausable, Loop, Solo, Disabled, volume, fades, trim and ducking.
+  Missing or unreadable sounds are skipped, not fatal, and the result lists what was
+  imported, skipped and not carried over (`set.import` answers with `farrago`). The
+  format is described in docs/FARRAGO-IMPORT.md.
+- **Sets in windows of their own.** View ▸ Open Set in New Window (or Open in New
+  Window in a set's right-click menu) shows a set's board in a separate window, to put
+  on another monitor or workspace while the main window shows another set. Its pads and
+  cue list play, select and take dropped files as in the main window, keys typed in it
+  play its pads and run its cue list, and it has its own Stop All; the main window keeps
+  the menus, setlist and inspector, and the setlist marks a set that has a window. Set
+  windows open again where they were at the next launch (on Wayland the compositor
+  places them), and View ▸ Gather Windows brings them all back beside the main window.
+  New commands `window.open`, `window.close`, `window.list`, `window.focus`,
+  `window.move` and `window.gather`; `view.screenshot` takes `window`, and a
+  `LEADSTINGER_SNAPSHOT` run saves each set window beside the main shot.
+
+### Changed
+
+- **macOS: the title bar is part of the window.** The main window and set windows no
+  longer spend a row on an empty title bar: the traffic lights sit over the toolbar,
+  centred on it (a set window: left of the set's name), and dragging the toolbar's empty
+  parts moves the window, and double-clicking it zooms it (or whatever System Settings
+  says a title-bar double-click does). In Panel the lights stay hidden and show, in a
+  black pill of their own, only while the pointer is in the window's top-left corner.
+  Linux windows are unchanged.
+
+### Fixed
+
+- Hover text names the platform's command key: ⌘ on macOS, Ctrl on Linux (it said
+  "⌘/Ctrl" on both). The CLI docs keep both, since they serve both.
+
 ## [0.2.1] - 2026-11-01
 
 ### Added
@@ -790,7 +866,8 @@ The first public release.
   binds can fire clips from anywhere.
 - A Nix flake with a package, a dev shell, the NixOS module and a VM test.
 
-[Unreleased]: https://github.com/weckere/leadstinger/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/weckere/leadstinger/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/weckere/leadstinger/releases/tag/v0.3.0
 [0.2.1]: https://github.com/weckere/leadstinger/releases/tag/v0.2.1
 [0.2.0]: https://github.com/weckere/leadstinger/releases/tag/v0.2.0
 [0.1.0]: https://github.com/weckere/leadstinger/releases/tag/v0.1.0

@@ -287,7 +287,7 @@ const CODES: &[&str] = &[
     "failed",
     "bad_params", "not_found", "ambiguous", "unknown_command", "loading", "no_audio", "end_of_cues", "nothing_to_paste",
     "decode_failed", "not_playing", "last_set", "device_failed", "bad_request", "io", "no_window", "not_connected",
-    "preview_unavailable",
+    "preview_unavailable", "not_open",
 ];
 
 #[cfg(test)]

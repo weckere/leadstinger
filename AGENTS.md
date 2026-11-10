@@ -66,8 +66,9 @@ libraries the README lists.
   the menus, the CLI and agents all get them. Then regenerate the CLI reference:
   `cargo run --bin leadstinger-cli -- commands --markdown > docs/CLI.md` (a test fails
   if it's stale).
-- On Linux, `scripts/linux-check.sh` runs the tests, `nix build` and a headless
-  screenshot.
+- On Linux, `scripts/linux-check.sh` runs the tests, a release build and a headless
+  screenshot (`LINUX_CHECK_FULL=1` adds `nix build` of the package); clones on one host
+  share a cargo target dir and the checks queue on a lock.
 
 ## Style
 

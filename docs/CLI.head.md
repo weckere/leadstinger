@@ -66,7 +66,14 @@ leadstinger-cli tile.set "Air Horn" --hold --fade-out 0.5 --color red
 leadstinger-cli add ~/Clips/*.flac --set "Game Night"
 leadstinger-cli view.theme panel
 leadstinger-cli status --json | jq '.playing[].title'
+leadstinger-cli window.open "Theatre Cues" --x 1920 --y 0   # its own window, on the second monitor
+leadstinger-cli window.list --json | jq '.windows[] | {name, x, y}'
+leadstinger-cli window.gather                       # every set window back beside the main one
 ```
+
+A set in its own window is titled "‹set› · LeadStinger" with the app id `leadstinger`, so
+a Hyprland window rule matching that title can put it on a workspace or monitor (Wayland
+compositors place windows themselves and ignore `x` and `y`).
 
 Hyprland binds fire clips from any workspace without focusing the app. In the Lua
 config of Hyprland 0.56+:

@@ -23,7 +23,7 @@ use crate::logic::{
 };
 use crate::level;
 use crate::model::{zoom_step, ZOOM_MAX, ZOOM_MIN, ActionKind, CueLink, Target as ActionTarget, WAIT_MAX, TileAction, REPLAY_MAX, SPEED_MAX, SPEED_MIN, Appearance, Duck, FadeCurve, Marker, ImageFit, ImageLayer, Layout, PlayMode, PressOptions, SoundSet, ThemeKind, Tile, TileColor, GAIN_DB_MAX};
-use crate::model::{tidy_channel_mix, tidy_sends, ChannelRoute, ChannelTo, GridMode, TileSend, MAIN_OUTPUT};
+use crate::model::{tidy_channel_mix, tidy_sends, ChannelRoute, ChannelTo, GridMode, TileSend, DUCK_DB_MIN, EMOJI_MAX_CHARS, MAIN_OUTPUT};
 use crate::rows::Place;
 use crate::picture::is_image_path;
 use crate::store::{Media, Store};
@@ -138,7 +138,11 @@ pub enum Effect {
     SaveSetFile(Option<Uuid>),
     /// `set.create`/`set.rename` without a name: edit it in place.
     StartRename(Uuid),
-    Screenshot(PathBuf),
+    /// `view.screenshot`: the main window, or a set's window (`window`).
+    Screenshot { path: PathBuf, window: Option<Uuid> },
+    /// `window.focus`, `window.move`, `window.gather`: the main window (`None`) or a
+    /// set's window.
+    Window { window: Option<Uuid>, op: WindowOp },
     ClearClip,
     /// Playback was stopped wholesale or the set changed: forget held keys and buttons.
     ReleaseHeld,
@@ -165,6 +169,29 @@ pub enum Effect {
     /// Scroll the board to this tile (a recording started in it).
     Reveal(Uuid),
     Quit,
+}
+
+/// What a window command asks of a window (D-224).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum WindowOp {
+    Focus,
+    /// Its top-left corner and inside size, in the desktop's logical points.
+    Place { pos: Option<[f32; 2]>, size: Option<[f32; 2]> },
+    /// Every set window beside the main window, one below another.
+    Gather,
+}
+
+/// A window as the app last drew it, for `window.list`: the main window, or a set's.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WindowView {
+    /// `None`: the main window.
+    pub set: Option<Uuid>,
+    pub title: String,
+    /// Its top-left corner in the desktop's logical points; `None` where the compositor
+    /// keeps positions to itself (Wayland).
+    pub pos: Option<[f32; 2]>,
+    pub size: Option<[f32; 2]>,
+    pub focused: bool,
 }
 
 /// A command that didn't run. `code` is stable for scripts and the CLI's exit codes.
@@ -407,6 +434,8 @@ pub struct Controller {
     /// False for the offline CLI and `leadstinger-cli serve`: commands that would open a file
     /// picker, edit a name in place or take a screenshot then fail with `no_window`.
     pub has_window: bool,
+    /// The windows as the app last drew them, main first (`window.list`).
+    pub windows: Vec<WindowView>,
     last_reopen: Instant,
     last_tick: Instant,
     /// `events.subscribe` listeners (the control socket's `watch`).
@@ -723,6 +752,7 @@ impl Controller {
             effects: Vec::new(),
             x11: false,
             has_window: true,
+            windows: Vec::new(),
             last_reopen: Instant::now(),
             last_tick: Instant::now(),
             subscribers: Vec::new(),
@@ -954,6 +984,125 @@ impl Controller {
     }
 
     /// Fail a command that needs the window when there isn't one.
+    /// The set a window command names (default: the current one), which must be open in
+    /// a window of its own.
+    fn open_window(&self, id: &str, r: Option<&str>) -> Result<Uuid, CmdError> {
+        let set = &self.store.library.sets[self.resolve_set(r)?];
+        if self.store.library.set_windows.iter().any(|w| w.set == set.id) {
+            Ok(set.id)
+        } else {
+            Err(CmdError::new("not_open", format!("{id}: “{}” isn't open in a window of its own (window.open opens it)", set.name)))
+        }
+    }
+
+    /// `window.*` (D-222, D-224): sets in windows of their own. The library keeps which
+    /// are open and where; the app opens, moves and reports the windows.
+    fn window_command(&mut self, id: &str, p: &P) -> Res {
+        self.needs_window(id, "the app's windows")?;
+        let point = |k: &str| -> Result<Option<f32>, CmdError> {
+            match p.f64(k)? {
+                Some(v) if !v.is_finite() || v.abs() >= 100_000.0 => Err(bad(format!("{id}: {k} must be a number of points"))),
+                v => Ok(v.map(|v| v as f32)),
+            }
+        };
+        let (x, y, width, height) = (point("x")?, point("y")?, point("width")?, point("height")?);
+        let pos = x.zip(y).map(|(x, y)| [x, y]);
+        if x.is_some() != y.is_some() {
+            return Err(bad(format!("{id}: give x and y together")));
+        }
+        let [min_w, min_h] = crate::model::SET_WINDOW_MIN;
+        // A size missing one side keeps that side (0 here; the app fills it in).
+        let size = (width.is_some() || height.is_some()).then(|| [width.map_or(0.0, |w| w.max(min_w)), height.map_or(0.0, |h| h.max(min_h))]);
+        let window_id = |set: Option<Uuid>| set.map_or_else(|| json!("main"), |s| json!(s));
+        match id {
+            "window.open" => {
+                let si = self.set_param(p)?;
+                let set = &self.store.library.sets[si];
+                let (sid, name) = (set.id, set.name.clone());
+                if self.store.library.set_windows.iter().any(|w| w.set == sid) {
+                    self.effects.push(Effect::Window { window: Some(sid), op: WindowOp::Focus });
+                    if pos.is_some() || size.is_some() {
+                        self.effects.push(Effect::Window { window: Some(sid), op: WindowOp::Place { pos, size } });
+                    }
+                    return Ok(json!({"set": sid, "name": name, "opened": false}));
+                }
+                self.store.library.set_windows.push(crate::model::SetWindow {
+                    set: sid,
+                    x,
+                    y,
+                    width: width.map(|w| w.max(min_w)),
+                    height: height.map(|h| h.max(min_h)),
+                });
+                self.store.mark_dirty();
+                Ok(json!({"set": sid, "name": name, "opened": true}))
+            }
+            "window.close" => {
+                let closing: Vec<Uuid> = if p.bool("all")? == Some(true) {
+                    self.store.library.set_windows.iter().map(|w| w.set).collect()
+                } else {
+                    vec![self.open_window(id, p.str("set")?)?]
+                };
+                let lib = &mut self.store.library;
+                lib.set_windows.retain(|w| !closing.contains(&w.set));
+                self.windows.retain(|w| w.set.is_none_or(|s| !closing.contains(&s)));
+                let names: Vec<String> = closing.iter().filter_map(|s| lib.set_index(*s)).map(|i| lib.sets[i].name.clone()).collect();
+                if !closing.is_empty() {
+                    self.store.mark_dirty();
+                }
+                Ok(json!({"closed": names}))
+            }
+            "window.list" => {
+                let lib = &self.store.library;
+                let windows: Vec<Value> = self
+                    .windows
+                    .iter()
+                    .map(|w| {
+                        let mut o = json!({"window": window_id(w.set), "title": w.title, "focused": w.focused});
+                        o["name"] = match w.set.and_then(|s| lib.set_index(s)) {
+                            Some(i) => json!(lib.sets[i].name),
+                            None => json!(crate::brand::APP_NAME),
+                        };
+                        if let Some(s) = w.set {
+                            o["set"] = json!(s);
+                        }
+                        if let Some([x, y]) = w.pos {
+                            (o["x"], o["y"]) = (json!(x.round()), json!(y.round()));
+                        }
+                        if let Some([w, h]) = w.size {
+                            (o["width"], o["height"]) = (json!(w.round()), json!(h.round()));
+                        }
+                        o
+                    })
+                    .collect();
+                Ok(json!({"windows": windows}))
+            }
+            "window.focus" => {
+                let window = match p.str("set")? {
+                    Some(r) => Some(self.open_window(id, Some(r))?),
+                    None => None,
+                };
+                self.effects.push(Effect::Window { window, op: WindowOp::Focus });
+                Ok(json!({"window": window_id(window)}))
+            }
+            "window.move" => {
+                let window = match p.str("set")? {
+                    Some(r) => Some(self.open_window(id, Some(r))?),
+                    None => None,
+                };
+                if pos.is_none() && size.is_none() {
+                    return Err(bad(format!("{id}: give x and y, width or height")));
+                }
+                self.effects.push(Effect::Window { window, op: WindowOp::Place { pos, size } });
+                Ok(json!({"window": window_id(window)}))
+            }
+            _ => {
+                let moved = self.store.library.set_windows.len();
+                self.effects.push(Effect::Window { window: None, op: WindowOp::Gather });
+                Ok(json!({"moved": moved}))
+            }
+        }
+    }
+
     fn needs_window(&self, id: &str, missing: &str) -> Result<(), CmdError> {
         if self.has_window {
             Ok(())
@@ -2484,6 +2633,7 @@ impl Controller {
         json!({
             "id": t.id,
             "title": t.title,
+            "emoji": t.emoji,
             "set": lib.sets[si].name,
             "position": ti + 1,
             "row": lib.sets[si].row_of(ti).0 + 1,
@@ -2498,6 +2648,7 @@ impl Controller {
             "one_shot": t.press.one_shot,
             "mode": enum_name(t.press.mode()),
             "volume": t.volume,
+            "muted": t.muted,
             "gain_db": t.gain_db,
             "speed": t.speed,
             "pitch": t.pitch,
@@ -2506,6 +2657,7 @@ impl Controller {
             "channels": if t.channel_mix.is_empty() { json!("auto") } else { json!(t.channel_mix) },
             "channel_layout": self.store.audio(t).and_then(|a| a.native.as_ref().map(|n| n.labels.clone())),
             "duck": enum_name(t.duck),
+            "duck_level": t.duck_db.map_or(json!("default"), |db| json!(db)),
             "loop": t.looping,
             "solo": t.solo,
             "fade_in": t.fade_in,
@@ -3856,7 +4008,7 @@ impl Controller {
                 Some(path) if p.bool("ask")?.unwrap_or(false) => {
                     self.needs_window(id, "a path without ask")?;
                     let file = PathBuf::from(path);
-                    if !file.is_file() {
+                    if !file.is_file() && !(crate::farrago::is_export(&file) && file.is_dir()) {
                         return Err(CmdError::new("not_found", format!("No set file at {path}")));
                     }
                     let name = file.file_name().map_or_else(|| path.to_owned(), |n| n.to_string_lossy().into_owned());
@@ -3869,7 +4021,7 @@ impl Controller {
                 }
                 Some(path) => {
                     let use_theme = p.bool("useTheme")?;
-                    let crate::setfile::Import { sets, theme } = crate::setfile::import(&mut self.store, path.as_ref())
+                    let crate::setfile::Import { sets, theme, farrago } = crate::setfile::import(&mut self.store, path.as_ref())
                         .map_err(|e| CmdError::new("failed", format!("Couldn't import {path}: {e:#}")))?;
                     // Show the first new set.
                     self.store.library.selected_set = Some(sets[0].id);
@@ -3882,6 +4034,23 @@ impl Controller {
                     };
                     let what = format!("{what} ({tiles} sound{})", if tiles == 1 { "" } else { "s" });
                     let theme = match theme {
+                        None if farrago.is_some() => {
+                            let report = farrago.as_ref().expect("checked");
+                            let mut text = format!("Imported {what} from Farrago");
+                            if !report.skipped.is_empty() {
+                                let list: Vec<String> = report.skipped.iter().map(|s| format!("“{}” ({})", s.title, s.reason)).collect();
+                                text += &format!("; skipped {}", list.join(", "));
+                            }
+                            if !report.dropped.is_empty() {
+                                text += &format!("; not carried over: {}", report.dropped.join(", "));
+                            }
+                            if report.skipped.is_empty() {
+                                self.notify(text);
+                            } else {
+                                self.notify_error(text);
+                            }
+                            Value::Null
+                        }
                         None => {
                             self.notify(format!("Imported {what}"));
                             Value::Null
@@ -3895,7 +4064,11 @@ impl Controller {
                             json!({"error": e})
                         }
                     };
-                    Ok(json!({"sets": sets, "theme": theme}))
+                    let mut answer = json!({"sets": sets, "theme": theme});
+                    if let Some(report) = farrago {
+                        answer["farrago"] = json!(report);
+                    }
+                    Ok(answer)
                 }
             },
             "set.export" => {
@@ -4021,6 +4194,7 @@ impl Controller {
                 Ok(json!({"removed": title}))
             }
             "tile.move" => self.tile_move(&p),
+            "tile.copy" => self.tile_copy(&p),
             "tile.set" => self.tile_set(&p),
             "tile.picture" => {
                 let id = self.tile_param(&p)?;
@@ -4271,9 +4445,14 @@ impl Controller {
             "view.screenshot" => {
                 let path = PathBuf::from(p.need_str("path")?);
                 self.needs_window(id, "a window")?;
-                self.effects.push(Effect::Screenshot(path));
+                let window = match p.str("window")? {
+                    Some(r) => Some(self.open_window(id, Some(r))?),
+                    None => None,
+                };
+                self.effects.push(Effect::Screenshot { path, window });
                 ok()
             }
+            "window.open" | "window.close" | "window.list" | "window.focus" | "window.move" | "window.gather" => self.window_command(id, &p),
             "app.quit" => {
                 if let Err(e) = self.store.save_now() {
                     eprintln!("{}: failed to save library: {e:#}", crate::brand::SLUG);
@@ -4598,7 +4777,16 @@ impl Controller {
                     let lib = &self.store.library;
                     let anchor = self.selected_tile.and_then(|a| lib.locate(a)).zip(lib.locate(id)).filter(|((s1, _), (s2, _))| s1 == s2);
                     let add = p.bool("add")? == Some(true);
-                    if let (Some(true), Some(((si, a), (_, b)))) = (p.bool("range")?, anchor) {
+                    if p.bool("remove")? == Some(true) {
+                        // Alt-click (D-229): out of the selection if it's in it; an
+                        // unselected tile leaves the selection as it is.
+                        let mut sel = self.selected();
+                        if let Some(i) = sel.iter().position(|x| *x == id) {
+                            sel.remove(i);
+                            self.selected_tile = sel.last().copied();
+                            self.selection = sel;
+                        }
+                    } else if let (Some(true), Some(((si, a), (_, b)))) = (p.bool("range")?, anchor) {
                         // The rectangle between the tile in the inspector (it stays the
                         // anchor) and this one (D-169); with add, on top of the selection.
                         let columns = p.f64("columns")?.map(|c| (c as usize).clamp(1, 64));
@@ -4697,6 +4885,52 @@ impl Controller {
         Ok(out)
     }
 
+    /// `tile.copy`: copies of one tile, or with `tiles` several from one set, dropped as
+    /// one run in the set's order at a place on the board as it is (nothing comes out),
+    /// or with `set` into another set, at its end by default; the originals stay where
+    /// they are. What an Alt-drag does (D-229). A hand-set key stays only on a copy in
+    /// another set that has no tile with that key (D-230).
+    fn tile_copy(&mut self, p: &P) -> Res {
+        let ids = match p.get("tiles") {
+            Some(list) => self.tile_refs(list, "tile.copy")?,
+            None => vec![self.tile_param(p)?],
+        };
+        let lib = &self.store.library;
+        let found: Vec<(usize, usize)> = ids.iter().map(|id| lib.locate(*id).expect("resolved")).collect();
+        let Some(&(from_set, _)) = found.first() else { return Err(bad("tile.copy: tiles is empty")) };
+        if found.iter().any(|&(s, _)| s != from_set) {
+            return Err(bad("tile.copy: the tiles must all be in one set"));
+        }
+        let to_set = match p.str("set")? {
+            Some(r) => self.resolve_set(Some(r))?,
+            None => from_set,
+        };
+        let mut from: Vec<usize> = found.iter().map(|&(_, i)| i).collect();
+        from.sort_unstable();
+        from.dedup();
+        let sets = &mut self.store.library.sets;
+        let copies: Vec<(Uuid, Tile)> = from.iter().map(|&i| {
+            let t = &sets[from_set].tiles[i];
+            let mut copy = t.duplicate();
+            if to_set != from_set && t.hotkey_manual && t.hotkey.is_some_and(|k| tile_for_key(&sets[to_set].tiles, k).is_none()) {
+                copy.hotkey = t.hotkey;
+                copy.hotkey_manual = true;
+            }
+            (t.id, copy)
+        }).collect();
+        let place = place_param(p, "to")?.unwrap_or(Place::Append);
+        let made: Vec<(Uuid, Uuid)> = copies.iter().map(|(of, c)| (*of, c.id)).collect();
+        sets[to_set].insert_tiles(place, copies.into_iter().map(|(_, c)| c).collect());
+        self.store.mark_dirty();
+        let set = &self.store.library.sets[to_set];
+        let tiles: Vec<Value> = made.iter().map(|(of, id)| {
+            let i = set.tiles.iter().position(|t| t.id == *id).unwrap_or(0);
+            let (row, slot) = set.row_of(i);
+            json!({"tile": id, "copyOf": of, "position": i + 1, "row": row + 1, "slot": slot + 1})
+        }).collect();
+        Ok(json!({"set": set.name, "tiles": tiles}))
+    }
+
     /// `tile.set`: one tile, or with `tiles` several at once. If any of them refuses a
     /// setting, none of them changes.
     fn tile_set(&mut self, p: &P) -> Res {
@@ -4747,6 +4981,17 @@ impl Controller {
         if let Some(s) = p.str("title")? {
             t.title = s.to_owned();
         }
+        // The emoji beside the title (D-253): emoji only; empty or null clears it.
+        if p.has("emoji") {
+            let e = p.str("emoji")?.map(str::trim).unwrap_or_default();
+            if !e.is_empty() && !crate::model::is_emoji(e) {
+                return Err(bad(format!("tile.set: emoji takes emoji only (got {e:?}); \"\" clears it")));
+            }
+            if e.chars().count() > EMOJI_MAX_CHARS {
+                return Err(bad(format!("tile.set: emoji is at most {EMOJI_MAX_CHARS} characters")));
+            }
+            t.emoji = e.to_owned();
+        }
         if let Some(c) = p.named::<TileColor>("color", "red, orange, yellow, lime, green, mint, teal, cyan, blue, indigo, purple, pink, rose, crimson, brown, gray")? {
             t.color = c;
         }
@@ -4791,6 +5036,19 @@ impl Controller {
         }
         if let Some(d) = p.named::<Duck>("duck", "none, ducks, ducked")? {
             t.duck = d;
+        }
+        // A bed's own duck level (D-245): dB, or default (null) to follow the library's.
+        if let Some(k) = ["duckLevel", "duck_level"].into_iter().find(|k| p.has(k)) {
+            let default = p.get(k).is_none_or(|v| v.as_str().is_some_and(|s| s.trim().eq_ignore_ascii_case("default")));
+            t.duck_db = if default {
+                None
+            } else {
+                let db = p.f64(k).map_err(|_| bad(format!("tile.set: {k} must be dB ({DUCK_DB_MIN} to 0) or default")))?.unwrap_or_default();
+                if !(DUCK_DB_MIN as f64..=0.0).contains(&db) {
+                    return Err(bad(format!("tile.set: {k} must be {DUCK_DB_MIN} to 0 dB, or default")));
+                }
+                Some(db as f32)
+            };
         }
         if let Some(st) = p.f64("pitch")? {
             if !(-crate::pitch::PITCH_MAX as f64..=crate::pitch::PITCH_MAX as f64).contains(&st) {
@@ -4886,6 +5144,10 @@ impl Controller {
         if let Some(b) = p.bool("disabled")? {
             t.disabled = b;
         }
+        // Mute (D-251): zero gain on every send; the volume stays as it was.
+        if let Some(b) = p.bool("muted")? {
+            t.muted = b;
+        }
         // Some(None): automatic; Some(Some(None)): no key, by hand.
         let hotkey = if p.has("hotkey") {
             match p.str("hotkey")?.map(str::trim) {
@@ -4897,9 +5159,9 @@ impl Controller {
             None
         };
         let known = [
-            "tile", "tiles", "title", "color", "mode", "hold", "pausable", "oneShot", "oneshot", "volume", "gainDb", "speed", "pitch", "output", "sends", "channels", "duck", "fadeCurve", "fadeIn", "fadeOut", "stopFade", "preWait", "postWait", "link", "loop", "solo", "trimStart", "trimEnd",
+            "tile", "tiles", "title", "emoji", "color", "mode", "hold", "pausable", "oneShot", "oneshot", "volume", "gainDb", "speed", "pitch", "output", "sends", "channels", "duck", "duckLevel", "duck_level", "fadeCurve", "fadeIn", "fadeOut", "stopFade", "preWait", "postWait", "link", "loop", "solo", "trimStart", "trimEnd",
             "pictureLayer", "pictureFit", "pictureOpacity", "hotkey", "vamp", "vampStart", "vampEnd",
-            "onStart", "onStop", "notes", "disabled",
+            "onStart", "onStop", "notes", "disabled", "muted",
         ];
         if let Some(k) = p.m.keys().find(|k| !known.contains(&k.as_str())) {
             return Err(bad(format!("tile.set: unknown setting {k:?}")));
@@ -4933,6 +5195,71 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let store = Store::open(root.join("data")).unwrap();
         (Controller::new(store, Engine::disabled("test")), root)
+    }
+
+    /// `window.*` (D-224): the library keeps which sets are open in windows and where;
+    /// the app is asked to raise, move and gather them.
+    #[test]
+    fn window_commands_open_close_and_ask_the_app() {
+        let (mut c, _root) = controller();
+        c.execute("set.create", json!({"name": "Cues"})).unwrap();
+        c.execute("set.select", json!({"set": "#1"})).unwrap();
+        c.effects.clear();
+        let r = c.execute("window.open", json!({"set": "Cues", "x": 1920, "y": 0, "width": 100})).unwrap();
+        assert_eq!(r["opened"], json!(true));
+        let w = c.store.library.set_windows[0].clone();
+        assert_eq!((w.x, w.y, w.width, w.height), (Some(1920.0), Some(0.0), Some(crate::model::SET_WINDOW_MIN[0]), None));
+        assert!(c.effects.is_empty(), "a new window needs nothing more from the app");
+        // Again: it's raised, not opened twice.
+        let r = c.execute("window.open", json!({"set": "Cues"})).unwrap();
+        assert_eq!(r["opened"], json!(false));
+        assert_eq!(c.store.library.set_windows.len(), 1);
+        let cues = w.set;
+        assert_eq!(c.effects, vec![Effect::Window { window: Some(cues), op: WindowOp::Focus }]);
+        c.effects.clear();
+        // The current set by default.
+        c.execute("window.open", json!({})).unwrap();
+        assert_eq!(c.store.library.set_windows.len(), 2);
+
+        c.execute("window.move", json!({"set": "Cues", "x": 10, "y": 20, "height": 300})).unwrap();
+        assert_eq!(c.effects, vec![Effect::Window { window: Some(cues), op: WindowOp::Place { pos: Some([10.0, 20.0]), size: Some([0.0, 300.0]) } }]);
+        c.effects.clear();
+        c.execute("window.focus", json!({})).unwrap();
+        assert_eq!(c.effects, vec![Effect::Window { window: None, op: WindowOp::Focus }]);
+        assert_eq!(c.execute("window.gather", json!({})).unwrap()["moved"], json!(2));
+        assert_eq!(c.execute("window.move", json!({"x": 10})).unwrap_err().code, "bad_params", "x without y");
+        assert_eq!(c.execute("window.move", json!({"set": "Cues"})).unwrap_err().code, "bad_params", "nothing to do");
+        assert_eq!(c.execute("window.open", json!({"x": "far"})).unwrap_err().code, "bad_params");
+        c.effects.clear();
+        let shot = c.execute("view.screenshot", json!({"path": "/tmp/w.png", "window": "Cues"}));
+        assert!(shot.is_ok());
+        assert_eq!(c.effects, vec![Effect::Screenshot { path: "/tmp/w.png".into(), window: Some(cues) }]);
+
+        // window.list reads what the app last drew.
+        c.windows = vec![
+            WindowView { set: None, title: "LeadStinger".into(), pos: Some([0.0, 0.0]), size: Some([1280.0, 800.0]), focused: true },
+            WindowView { set: Some(cues), title: "Cues · LeadStinger".into(), pos: None, size: Some([720.0, 520.0]), focused: false },
+        ];
+        let list = c.execute("window.list", json!({})).unwrap();
+        assert_eq!(list["windows"][0]["window"], json!("main"));
+        assert_eq!(list["windows"][1]["name"], json!("Cues"));
+        assert!(list["windows"][1].get("x").is_none(), "no position where the compositor keeps it");
+
+        assert_eq!(c.execute("window.close", json!({"set": "Cues"})).unwrap()["closed"], json!(["Cues"]));
+        assert_eq!(c.windows.len(), 1, "window.list forgets it at once");
+        assert_eq!(c.execute("window.close", json!({"set": "Cues"})).unwrap_err().code, "not_open");
+        assert_eq!(c.execute("window.focus", json!({"set": "Cues"})).unwrap_err().code, "not_open");
+        assert_eq!(c.execute("view.screenshot", json!({"path": "/tmp/w.png", "window": "Cues"})).unwrap_err().code, "not_open");
+        c.execute("window.open", json!({"set": "Cues"})).unwrap();
+        assert_eq!(c.execute("window.close", json!({"all": true})).unwrap()["closed"].as_array().unwrap().len(), 2);
+        assert!(c.store.library.set_windows.is_empty());
+
+        // Deleting a set closes its window; without a window there's nothing to ask.
+        c.execute("window.open", json!({"set": "Cues"})).unwrap();
+        c.execute("set.delete", json!({"set": "Cues"})).unwrap();
+        assert!(c.store.library.set_windows.is_empty(), "its window went with it");
+        c.has_window = false;
+        assert_eq!(c.execute("window.open", json!({})).unwrap_err().code, "no_window");
     }
 
     fn wait_loaded(c: &mut Controller) {
@@ -5841,11 +6168,58 @@ mod tests {
     }
 
     #[test]
+    fn a_tiles_emoji_is_set_cleared_and_undone() {
+        let (mut c, root) = controller();
+        add(&mut c, &root, &["Dog", "Cat"]);
+        assert_eq!(c.execute("tile.get", json!({"tile": "Dog"})).unwrap()["emoji"], "");
+        assert_eq!(c.execute("tile.set", json!({"tile": "Dog", "emoji": " 🐕\u{200D}\u{1F9BA} "})).unwrap()["emoji"], "🐕\u{200D}\u{1F9BA}");
+        assert_eq!(c.execute("tile.list", json!({})).unwrap()[0]["emoji"], "🐕\u{200D}\u{1F9BA}");
+        assert_eq!(c.execute("tile.get", json!({"tile": "Dog"})).unwrap()["title"], "Dog", "the title is untouched");
+        for bad in [json!("dog"), json!("🐕 dog"), json!("🐕".repeat(30)), json!(3)] {
+            assert_eq!(c.execute("tile.set", json!({"tile": "Cat", "emoji": bad})).unwrap_err().code, "bad_params", "{bad}");
+        }
+        c.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(c.execute("tile.get", json!({"tile": "Dog"})).unwrap()["emoji"], "", "one undo step");
+        c.execute("tile.set", json!({"tile": "Dog", "emoji": "🐕\u{200D}\u{1F9BA}"})).unwrap();
+        assert_eq!(c.execute("tile.set", json!({"tile": "Dog", "emoji": ""})).unwrap()["emoji"], "");
+        c.execute("tile.set", json!({"tile": "Dog", "emoji": "🐶"})).unwrap();
+        assert_eq!(c.execute("tile.set", json!({"tile": "Dog", "emoji": null})).unwrap()["emoji"], "", "null clears it too");
+    }
+
+    #[test]
+    fn mute_is_a_tile_setting_with_undo() {
+        let (mut c, root) = controller();
+        add(&mut c, &root, &["Bed", "Voice"]);
+        c.execute("tile.set", json!({"tile": "Bed", "volume": 0.6})).unwrap();
+        assert_eq!(c.execute("tile.get", json!({"tile": "Bed"})).unwrap()["muted"], false);
+        let r = c.execute("tile.set", json!({"tile": "Bed", "muted": true})).unwrap();
+        assert_eq!((r["muted"].as_bool(), r["volume"].as_f64().map(|v| (v * 10.0).round())), (Some(true), Some(6.0)), "the level is kept: {r}");
+        assert_eq!(c.execute("tile.list", json!({})).unwrap()[0]["muted"], true);
+        assert_eq!(c.execute("tile.set", json!({"tile": "Voice", "muted": "loud"})).unwrap_err().code, "bad_params");
+        c.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(c.execute("tile.get", json!({"tile": "Bed"})).unwrap()["muted"], false, "one undo step");
+        // A selection, as one step.
+        c.execute("tile.set", json!({"tiles": ["Bed", "Voice"], "muted": true})).unwrap();
+        assert!(c.execute("tile.list", json!({})).unwrap().as_array().unwrap().iter().all(|t| t["muted"] == true));
+    }
+
+    #[test]
     fn ducking_commands() {
         let (mut c, root) = controller();
         add(&mut c, &root, &["Bed", "Voice"]);
         assert_eq!(c.execute("tile.set", json!({"tile": "Bed", "duck": "ducked"})).unwrap()["duck"], "ducked");
         assert_eq!(c.execute("tile.set", json!({"tile": "Voice", "duck": "loud"})).unwrap_err().code, "bad_params");
+        // A bed's own level (D-245): dB, a number as text from the CLI, or back to default.
+        assert_eq!(c.execute("tile.get", json!({"tile": "Bed"})).unwrap()["duck_level"], "default");
+        assert_eq!(c.execute("tile.set", json!({"tile": "Bed", "duckLevel": -20})).unwrap()["duck_level"], -20.0);
+        assert_eq!(c.execute("tile.set", json!({"tile": "Bed", "duck_level": "-6.5"})).unwrap()["duck_level"], -6.5);
+        assert_eq!(c.execute("tile.list", json!({})).unwrap()[0]["duck_level"], -6.5);
+        for bad in [json!(-41), json!(3), json!("loud")] {
+            assert_eq!(c.execute("tile.set", json!({"tile": "Bed", "duckLevel": bad})).unwrap_err().code, "bad_params", "{bad}");
+        }
+        assert_eq!(c.execute("tile.set", json!({"tile": "Bed", "duckLevel": "Default"})).unwrap()["duck_level"], "default");
+        c.execute("tile.set", json!({"tile": "Bed", "duckLevel": -9})).unwrap();
+        assert_eq!(c.execute("tile.set", json!({"tile": "Bed", "duckLevel": null})).unwrap()["duck_level"], "default");
         assert_eq!(c.execute("duck.hold", json!({"on": true})).unwrap()["on"], true);
         assert_eq!(c.execute("status", json!({})).unwrap()["duck_hold"], true);
         assert_eq!(c.execute("duck.hold", json!({})).unwrap()["on"], false, "no on: toggles");
@@ -7102,6 +7476,74 @@ mod tests {
         assert_eq!(e(&mut c, json!({"tiles": [ids[1], ids[2]], "set": other})), "locked");
         assert_eq!(e(&mut c, json!({"tiles": [ids[3], ids[4]], "set": "#1"})), "locked");
         assert_eq!(e(&mut c, json!({"tiles": [ids[3], ids[4]], "to": 1})), "locked");
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// tile.copy (D-229, D-230): copies at a place on the board as it is, the originals
+    /// untouched, one undo step; into another set at its end, a hand-set key going along
+    /// only where it's free; never into or out of a locked set.
+    #[test]
+    fn tiles_copy_and_the_originals_stay() {
+        let (mut c, root) = controller();
+        let ids = add(&mut c, &root, &["a", "b", "c", "d", "e", "f", "g"]);
+        let slots = |c: &Controller| c.current_set().slots().iter().map(|r| r.iter().map(|x| x.map_or('.', |i| c.current_set().tiles[i].title.chars().next().unwrap())).collect::<String>()).collect::<Vec<_>>();
+        assert_eq!(slots(&c), ["abcde", "fg"]);
+        c.execute("tile.set", json!({"tile": ids[1], "color": "red", "volume": 0.5, "loop": true})).unwrap();
+        // b and f (any order) into row 2's first gap: b first, as in the set.
+        let r = c.execute("tile.copy", json!({"tiles": [ids[5], ids[1]], "row": 2, "at": 1})).unwrap();
+        assert_eq!(slots(&c), ["abcde", "bffg"]);
+        let copy = r["tiles"][0]["tile"].as_str().unwrap().parse::<Uuid>().unwrap();
+        assert_eq!(r["tiles"][0]["copyOf"], json!(ids[1]));
+        assert_eq!((r["tiles"][0]["row"].as_u64(), r["tiles"][0]["slot"].as_u64()), (Some(2), Some(1)));
+        let (orig, dup) = (c.store.library.tile(ids[1]).unwrap().clone(), c.store.library.tile(copy).unwrap().clone());
+        assert_eq!(Tile { id: orig.id, hotkey: orig.hotkey, ..dup }, orig, "a full duplicate, apart from its id and slot key");
+        assert!(ids.iter().all(|id| c.store.library.tile(*id).is_some()), "the originals stay");
+        c.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(slots(&c), ["abcde", "fg"], "one undo step");
+        // A blank filled, a slot past a row's end, a new row.
+        c.execute("tile.copy", json!({"tile": ids[0], "row": 2, "slot": 4})).unwrap();
+        assert_eq!(slots(&c), ["abcde", "fg.a"]);
+        c.execute("tile.copy", json!({"tile": ids[1], "row": 2, "slot": 3})).unwrap();
+        assert_eq!(slots(&c), ["abcde", "fgba"]);
+        c.execute("tile.copy", json!({"tile": ids[2], "row": 3, "newRow": true})).unwrap();
+        assert_eq!(slots(&c), ["abcde", "fgba", "c"]);
+        // Into another set: at its end; a hand-set key goes along where it's free.
+        let other = c.execute("set.create", json!({"name": "Other"})).unwrap()["id"].as_str().unwrap().to_owned();
+        c.execute("set.select", json!({"set": "#1"})).unwrap();
+        c.execute("tile.set", json!({"tile": ids[3], "hotkey": "alt+z"})).unwrap();
+        let r = c.execute("tile.copy", json!({"tiles": [ids[3], ids[4]], "set": other})).unwrap();
+        assert_eq!((r["set"].as_str(), r["tiles"][1]["position"].as_u64()), (Some("Other"), Some(2)));
+        let o = &c.store.library.sets[1].tiles;
+        assert_eq!((o[0].title.as_str(), o[0].hotkey.map(|k| k.name()), o[0].hotkey_manual), ("d", Some("alt+z".to_owned()), true));
+        // A second copy there: the key is taken, so it doesn't go along.
+        let r = c.execute("tile.copy", json!({"tile": ids[3], "set": other})).unwrap();
+        let again = r["tiles"][0]["tile"].as_str().unwrap().parse::<Uuid>().unwrap();
+        assert!(!c.store.library.tile(again).unwrap().hotkey_manual);
+        assert_eq!(c.store.library.tile(ids[3]).unwrap().hotkey.map(|k| k.name()), Some("alt+z".to_owned()), "the original keeps it");
+        // Refused: tiles from two sets, an empty list; a locked set either way.
+        let e = |c: &mut Controller, p: Value| c.execute("tile.copy", p).unwrap_err().code;
+        let there = c.store.library.sets[1].tiles[0].id;
+        assert_eq!(e(&mut c, json!({"tiles": [ids[0], there]})), "bad_params");
+        assert_eq!(e(&mut c, json!({"tiles": []})), "bad_params");
+        c.execute("set.lock", json!({"set": other})).unwrap();
+        assert_eq!(e(&mut c, json!({"tile": ids[0], "set": other})), "locked");
+        assert_eq!(e(&mut c, json!({"tile": there, "set": "#1"})), "locked");
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// view.select remove (Alt-click, D-229): out of the selection if it's in it.
+    #[test]
+    fn view_select_remove_takes_a_tile_out() {
+        let (mut c, root) = controller();
+        let ids = add(&mut c, &root, &["a", "b", "c", "d"]);
+        c.execute("view.select", json!({"tiles": [ids[0], ids[1], ids[2]]})).unwrap();
+        let r = c.execute("view.select", json!({"tile": ids[1], "remove": true})).unwrap();
+        assert_eq!(r["selected"], json!([ids[0], ids[2]]));
+        let r = c.execute("view.select", json!({"tile": ids[3], "remove": true})).unwrap();
+        assert_eq!(r["selected"], json!([ids[0], ids[2]]), "an unselected tile changes nothing");
+        c.execute("view.select", json!({"tile": ids[0], "remove": true})).unwrap();
+        let r = c.execute("view.select", json!({"tile": ids[2], "remove": true})).unwrap();
+        assert_eq!(r["selected"], json!([]), "the last one out: nothing selected");
         std::fs::remove_dir_all(root).ok();
     }
 

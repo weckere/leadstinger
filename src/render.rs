@@ -59,9 +59,10 @@ impl Format {
 }
 
 /// The tile as a render plays it (D-078): one pass, on its own. A loop plays once and
-/// fades out at its end, a vamp section plays straight through, and nothing ducks it.
+/// fades out at its end, a vamp section plays straight through, nothing ducks it, and a
+/// muted tile is heard (Mute is for the live show, D-251).
 pub fn one_pass(tile: &Tile) -> Tile {
-    Tile { looping: false, vamp: None, duck: Duck::None, solo: false, ..tile.clone() }
+    Tile { looping: false, vamp: None, duck: Duck::None, solo: false, muted: false, ..tile.clone() }
 }
 
 /// About how many frames a render of `tile` playing `audio` at `rate` has (progress).

@@ -65,15 +65,19 @@ pub(super) fn master(volume: f32) -> String {
 }
 
 /// A set in the sidebar.
-pub(super) fn set_row(name: &str, tiles: usize, playing: bool, locked: bool) -> String {
+pub(super) fn set_row(name: &str, tiles: usize, playing: bool, locked: bool, windowed: bool) -> String {
     let live = if playing { ", playing" } else { "" };
     let lock = if locked { ", locked" } else { "" };
+    let window = if windowed { ", open in a window of its own" } else { "" };
     format!(
-        "{name}: {tiles} tile{}{live}{lock}. Click to show it and its settings in the inspector, double-click to rename, \
+        "{name}: {tiles} tile{}{live}{lock}{window}. Click to show it and its settings in the inspector, double-click to rename, \
          right-click for more — ⌘/Ctrl+[ and ⌘/Ctrl+] move between sets",
         if tiles == 1 { "" } else { "s" }
     )
 }
+
+pub(super) const OPEN_WINDOW: &str = "Show this set in a window of its own, to put on another monitor or workspace; it opens there again next time";
+pub(super) const CLOSE_WINDOW: &str = "Close this set's own window (the set stays in the setlist)";
 
 pub(super) const RENAME_FIELD: &str = "The set's new name: Enter keeps it, Esc cancels";
 
@@ -139,9 +143,9 @@ impl StingerApp {
                  so it can't be moved or changed — focused: Enter plays or stops it (Space is Pause All)"
             } else {
                 "Click to select it, double-click to play it (on a Hold tile, keep the second click down), drag to move it \
-                 (selected, the whole selection moves; onto a set in the sidebar, into that set); ⌘/Ctrl-click adds it to \
-                 the selection; right-click for more — focused: Enter plays or stops it (Space is \
-                 Pause All), ⌘/Ctrl+Up/Down moves it"
+                 (selected, the whole selection moves; onto a set in the sidebar, into that set), Option/Alt-drag to copy it \
+                 there instead; ⌘/Ctrl-click adds it to the selection or takes it out, Option/Alt-click takes it out; \
+                 right-click for more — focused: Enter plays or stops it (Space is Pause All), ⌘/Ctrl+Up/Down moves it"
             }
             .into(),
         );
@@ -152,6 +156,8 @@ impl StingerApp {
 pub(super) const HOTKEY_TIP: &str = "The key that plays this tile while the window has focus. A pad takes its row's key (row 1: 1 to =, row 2: Q to ], row 3: A to ', row 4: Z to /, rows 5 to 8: the same with Option or Alt; a cue list has none) and it changes when the pad moves. Click, then press a key from those rows, Option or Alt too, to set one by hand that stays with the tile (Backspace clears, Esc keeps it)";
 pub(super) const HOTKEY_AUTO_TIP: &str = "Give the tile back its slot's key, which follows it as it moves";
 pub(super) const DUCK_TIP: &str = "Whether this tile dips beds while it plays, or is a bed that dips";
+pub(super) const EMOJI_TIP: &str = "An emoji or a few, shown before the title on the pad (in the title's colour; a narrow pad leaves them off). Paste them, or pick them with the system's emoji picker (Control-Command-Space on macOS); anything that isn't an emoji is left out. Empty for none";
+pub(super) const DUCK_TO_TIP: &str = "How far this bed dips while something ducks it, in dB below its level; drag, or type a value";
 pub(super) const FADE_IN_TIP: &str = "Seconds to fade in when it starts";
 pub(super) const FADE_OUT_TIP: &str = "Seconds to fade out at the end of the clip";
 pub(super) const STOP_FADE_TIP: &str = "Seconds to fade out when it's stopped (a click, its key, an action, Solo); 0 stops at once, with a 0.1 s de-click so it doesn't click or pop";
@@ -177,13 +183,16 @@ fn spoken_secs(s: f64) -> String {
 }
 
 /// A set in the sidebar, for a screen reader: "Game Night, set 1 of 2, 14 tiles, playing".
-pub(super) fn set_label(name: &str, index: usize, sets: usize, tiles: usize, playing: bool, locked: bool) -> String {
+pub(super) fn set_label(name: &str, index: usize, sets: usize, tiles: usize, playing: bool, locked: bool, windowed: bool) -> String {
     let mut out = format!("{name}, set {} of {sets}, {tiles} tile{}", index + 1, if tiles == 1 { "" } else { "s" });
     if playing {
         out.push_str(", playing");
     }
     if locked {
         out.push_str(", locked");
+    }
+    if windowed {
+        out.push_str(", in its own window");
     }
     out
 }

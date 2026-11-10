@@ -132,6 +132,8 @@ fn main() {
             eprintln!("{SLUG}: couldn't build the demo library: {e:#}");
         }
     }
+    #[cfg(target_os = "ios")]
+    leadstinger::ios::start_audio_session();
     let engine = if brand::env("SILENT").is_some() {
         // A screenshot shows the app as people see it, without this notice.
         let notice = if brand::env("SNAPSHOT").is_some() { String::new() } else { format!("Silent mode ({})", brand::env_name("SILENT")) };
@@ -151,9 +153,10 @@ fn main() {
     let x11 = use_x11(store.library.use_x11);
     let mut opts = app::Options::from_env();
     opts.x11 = x11;
-    #[allow(unused_mut)] // only Linux and macOS adjust it
+    leadstinger::titlebar::enable();
+    #[allow(unused_mut)] // only Linux, macOS and iOS adjust it
     let mut options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
+        viewport: leadstinger::titlebar::integrate(egui::ViewportBuilder::default())
             .with_title(app::APP_NAME)
             .with_app_id(brand::SLUG)
             .with_inner_size(window_size())
@@ -173,6 +176,10 @@ fn main() {
     #[cfg(target_os = "macos")]
     if opts.background {
         options.event_loop_builder = Some(Box::new(leadstinger::background::event_loop));
+    }
+    #[cfg(target_os = "ios")]
+    {
+        options.wgpu_options = leadstinger::ios::wgpu_options();
     }
     if let Err(e) = eframe::run_native(
         app::APP_NAME,

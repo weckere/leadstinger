@@ -6,7 +6,7 @@ use crate::decode::AUDIO_EXTENSIONS;
 use crate::logic::{
     db_to_gain, format_clock, gain_to_db, meter_frac, next_cue, play_range, Ballistics, PadKey, PlayState,
 };
-use crate::model::{ZOOM_MAX, ZOOM_MIN, ActionKind, CueLink, SPEED_MAX, SPEED_MIN, STOP_ALL_HOLD, Appearance, Duck, FadeCurve, GridMode, ImageFit, ImageLayer, Layout, ThemeKind, Tile, TileColor, GAIN_DB_MAX};
+use crate::model::{ZOOM_MAX, ZOOM_MIN, ActionKind, CueLink, SPEED_MAX, SPEED_MIN, STOP_ALL_HOLD, Appearance, Duck, FadeCurve, GridMode, ImageFit, ImageLayer, Layout, ThemeKind, Tile, TileColor, DUCK_DB_MIN, GAIN_DB_MAX};
 use crate::picture::{is_image_path, IMAGE_EXTENSIONS};
 use crate::store::{Media, PictureState, Store};
 use crate::commands::{Cmd, Invocation};
@@ -23,7 +23,7 @@ use eframe::egui::{
     self, pos2, vec2, Align, Align2, Color32, CornerRadius, FontId, Key, KeyboardShortcut, Modifiers, Pos2, Rect, RichText, Sense,
     Stroke, StrokeKind, Ui, Vec2,
 };
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -43,6 +43,9 @@ mod pad_options;
 use pad_options::PadOption;
 mod editor;
 mod inspector;
+mod windows;
+#[cfg(target_os = "ios")]
+mod touch;
 #[cfg(test)]
 mod a11y_tests;
 
@@ -65,6 +68,11 @@ const INSPECTOR_MAX_WIDTH: f32 = 520.0;
 
 const SHOT_SETTLE: (u32, Duration) = (2, Duration::from_millis(150));
 
+/// A captured frame and the paths it's saved to (`true`: quit once saved).
+type Shot = (Vec<(PathBuf, bool)>, Arc<egui::ColorImage>);
+/// Where captured frames go.
+type ShotSender = std::sync::mpsc::Sender<Shot>;
+
 /// Startup options, mostly for automated screenshots and demos.
 #[derive(Default)]
 pub struct Options {
@@ -74,7 +82,7 @@ pub struct Options {
     /// Comma-separated UI steps run on startup: `play:N`, `select:N`, `also:N` (⌘-click), `focus:N`, `list`,
     /// `grid`, `set:N`, `settings`, `import:PATH`, `paste`, `find:TEXT`, `picture:N:PATH`, `overlay:N`, `fit:N`,
     /// `editor:N`, `vamp:N`, `marker:N`, `ezoom:DOUBLINGS`, `record:SECONDS` (a recording that only shows), `scroll:POINTS[@X.Y]` (over that point, else the board),
-    /// `blank:ROW.SLOT` (1-based), `drag:N@X.Y` (tile N held over that point, still down), `files:K@X.Y` (K sound
+    /// `blank:ROW.SLOT` (1-based), `drag:N@X.Y` (tile N held over that point, still down; `altdrag:` with Alt held), `files:K@X.Y` (K sound
     /// files held over it), `tab:NAME` (the inspector's tab), `hide:sidebar|inspector`, `lock`, `unlock`, and
     /// `wait:FRAMES` to pause (e.g. until imported audio has decoded).
     pub script: Vec<String>,
@@ -156,6 +164,10 @@ pub struct StingerApp {
     _control: Option<control::Server>,
     renaming: Option<(Uuid, String, bool)>, // set id, draft, focus requested
     mouse_held: Option<Uuid>,
+    /// iPadOS: the touches down, each with the tile it plays, and the one egui emulates
+    /// the pointer with (app/touch.rs).
+    #[cfg(target_os = "ios")]
+    touches: touch::Touches,
     /// Where the board (the central panel) is; windows first open just inside it, clear
     /// of the toolbar and side panels.
     board_rect: Rect,
@@ -188,6 +200,8 @@ pub struct StingerApp {
     /// The `drag:`/`files:` script steps: (files?, tile or file count, point, frame).
     script_drag: Option<(bool, usize, Pos2, u32)>,
     script_drag_from: Option<Pos2>,
+    /// The drag is an `altdrag:` (Alt held).
+    script_drag_alt: bool,
     /// Tile pictures uploaded to the GPU, by media file name.
     textures: HashMap<String, egui::TextureHandle>,
     meter: Meter,
@@ -196,15 +210,20 @@ pub struct StingerApp {
     /// Screenshots asked for (`view.screenshot`, or `LEADSTINGER_SNAPSHOT`) and not yet
     /// requested from egui; `true` quits afterwards.
     shots: Vec<(PathBuf, bool)>,
-    /// Requested captures, oldest first: each frame `shot_rx` delivers is saved to the
-    /// front batch's paths.
-    shots_in_flight: VecDeque<Vec<(PathBuf, bool)>>,
+    /// Captures requested and not yet saved.
+    shots_pending: usize,
+    /// Captures whose saving ends a `LEADSTINGER_SNAPSHOT` run, still to come: it quits
+    /// once the last is saved.
+    quit_after: usize,
+    /// `view.screenshot {window}` shots of set windows, waiting for the ui to settle.
+    window_shots: Vec<(Uuid, PathBuf)>,
     /// A `view.screenshot` waiting for the ui to settle: the ui frames run since it was
     /// asked for, and when. See [`SHOT_SETTLE`].
     shot_settle: Option<(u32, Instant)>,
-    /// Captured frames, sent by egui's screenshot callback once the frame is rendered.
-    shot_tx: std::sync::mpsc::Sender<Arc<egui::ColorImage>>,
-    shot_rx: std::sync::mpsc::Receiver<Arc<egui::ColorImage>>,
+    /// Captured frames with the paths they go to, sent by egui's screenshot callback once
+    /// the frame (of whichever window) is rendered.
+    shot_tx: ShotSender,
+    shot_rx: std::sync::mpsc::Receiver<Shot>,
     #[cfg(target_os = "macos")]
     native_menu: Option<crate::native_menu::NativeMenu>,
     last_frame: Instant,
@@ -254,6 +273,10 @@ pub struct StingerApp {
     update_seen: u64,
     /// Its dialog, while open: a newer release, or "latest" after a menu check.
     update_dialog: Option<crate::update::Outcome>,
+    /// The sets open in windows of their own, while they're open (src/app/windows.rs).
+    set_wins: HashMap<Uuid, windows::SetWin>,
+    /// The app icon, for set windows.
+    window_icon: Arc<egui::IconData>,
 }
 
 impl StingerApp {
@@ -317,6 +340,8 @@ impl StingerApp {
             _control: control,
             renaming: None,
             mouse_held: None,
+            #[cfg(target_os = "ios")]
+            touches: Default::default(),
             board_rect: Rect::ZERO,
             inspector_width: 0.0,
             keys_held: HashMap::new(),
@@ -340,11 +365,14 @@ impl StingerApp {
             script_scroll: None,
             script_drag: None,
             script_drag_from: None,
+            script_drag_alt: false,
             textures: HashMap::new(),
             meter: Meter::new(),
             last_paste: None,
             shots: Vec::new(),
-            shots_in_flight: VecDeque::new(),
+            shots_pending: 0,
+            quit_after: 0,
+            window_shots: Vec::new(),
             shot_settle: None,
             shot_tx,
             shot_rx,
@@ -369,6 +397,8 @@ impl StingerApp {
             editor_view: None,
             update_seen: 0,
             update_dialog: None,
+            set_wins: HashMap::new(),
+            window_icon: Arc::new(theme::app_icon()),
         }
     }
 
@@ -411,6 +441,7 @@ impl StingerApp {
                         let file = rfd::FileDialog::new()
                             .set_title("Import Set")
                             .add_filter("Set files", &[crate::setfile::EXTENSION, "zip"])
+                            .add_filter("Farrago set", &[crate::farrago::EXTENSION, "zip"])
                             .pick_file();
                         if let Some(path) = file {
                             self.run(inv!("set.import", {"path": path}));
@@ -456,10 +487,14 @@ impl StingerApp {
                             self.renaming = Some((id, self.ctl.store.library.sets[i].name.clone(), false));
                         }
                     }
-                    Effect::Screenshot(path) => {
-                        self.shots.push((path, false));
+                    Effect::Screenshot { path, window } => {
+                        match window {
+                            Some(set) => self.window_shots.push((set, path)),
+                            None => self.shots.push((path, false)),
+                        }
                         self.shot_settle = Some((0, Instant::now()));
                     }
+                    Effect::Window { window, op } => self.window_effect(ctx, window, op),
                     Effect::ClearClip => self.meter.clip = false,
                     Effect::FocusSearch => self.search_focus = true,
                     Effect::ExportAudio { tiles, set } => self.export = Some(export_ui::ExportDialog::new(tiles, set)),
@@ -486,6 +521,7 @@ impl StingerApp {
                     Effect::ReleaseHeld => {
                         self.mouse_held = None;
                         self.keys_held.clear();
+                        self.release_held_in_windows();
                     }
                     Effect::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
                 }
@@ -526,6 +562,8 @@ impl StingerApp {
             zoom: self.ctl.store.library.zoom,
             editor: self.ctl.editor.is_some(),
             can_edit_wave: self.ctl.selected_tile.and_then(|id| self.ctl.store.library.tile(id)).is_some_and(|t| t.action.is_none() && t.file.is_some()),
+            set_window: self.ctl.store.library.set_windows.iter().any(|w| w.set == set.id),
+            windows_open: !self.ctl.store.library.set_windows.is_empty(),
         }
     }
 
@@ -1061,6 +1099,8 @@ impl StingerApp {
                 "reset" => inv!("cue.reset"),
                 "continuous" | "queued" => inv!("set.listMode", {"mode": cmd}),
                 "set" => inv!("set.select", {"set": tile}),
+                // A set (from 0) in a window of its own.
+                "window" => inv!("window.open", {"set": format!("#{}", n + 1)}),
                 "settings" => inv!("view.settings"),
                 "updates" => inv!("app.checkForUpdates"),
                 "import" => inv!("tile.add", {"paths": [arg]}),
@@ -1169,9 +1209,10 @@ impl StingerApp {
                     self.opts.script_resume_frame = self.frame + n as u64;
                     break;
                 }
-                // drag:3@600.420 holds tile 3 over (600, 420), button down; files:2@600.420
-                // holds two sound files there (D-141 previews).
-                "drag" | "files" | "blank" => {
+                // drag:3@600.420 holds tile 3 over (600, 420), button down (altdrag: with
+                // Alt down too, a copy, D-229); files:2@600.420 holds two sound files there
+                // (D-141 previews).
+                "drag" | "altdrag" | "files" | "blank" => {
                     let (what, at) = arg.split_once('@').unwrap_or((arg, ""));
                     let num = |t: &str| t.split_once('.').and_then(|(a, b)| Some((a.parse::<f32>().ok()?, b.parse::<f32>().ok()?)));
                     if cmd == "blank" {
@@ -1180,6 +1221,7 @@ impl StingerApp {
                     } else {
                         let (Ok(k), Some((x, y))) = (what.parse::<usize>(), num(at)) else { continue };
                         self.script_drag = Some((cmd == "files", k, pos2(x, y), 0));
+                        self.script_drag_alt = cmd == "altdrag";
                         continue;
                     }
                 }
@@ -1205,6 +1247,10 @@ impl StingerApp {
         ui.horizontal(|ui| {
             ui.set_height(48.0);
             ui.spacing_mut().item_spacing.x = 10.0;
+            // The top strip on macOS: clear of the traffic lights (D-228).
+            if !self.opts.in_window_menu {
+                ui.add_space((crate::titlebar::inset(ui.ctx()).x - 14.0).max(0.0));
+            }
             // A narrow (e.g. tiled) window shrinks the wordmark to its tile mark, so Stop
             // All and Settings always have room.
             paint_wordmark(ui, ui.available_width() < 720.0);
@@ -1526,25 +1572,33 @@ impl StingerApp {
                 let font = if is_sel { theme::semibold(13.0) } else { theme::regular(13.0) };
                 let name = ui.fonts_mut(|f| {
                     let mut job = egui::text::LayoutJob::simple_singleline(set.name.clone(), font, t.text);
-                    job.wrap.max_width = rect.width() - if set.locked { 84.0 } else { 64.0 };
+                    let windowed = self.ctl.store.library.set_windows.iter().any(|w| w.set == set.id);
+                    job.wrap.max_width = rect.width() - 64.0 - if set.locked { 20.0 } else { 0.0 } - if windowed { 20.0 } else { 0.0 };
                     job.wrap.max_rows = 1;
                     f.layout_job(job)
                 });
                 p.galley(pos2(rect.left() + 26.0, rect.center().y - name.size().y / 2.0), name, t.text);
                 let count = theme::paint_tabular(p, pos2(rect.right() - 10.0, rect.center().y), Align2::RIGHT_CENTER, &set.tiles.len().to_string(), theme::regular(11.5), t.text_dim);
+                let mut left = count.left();
                 if set.locked {
-                    pad_options::paint_lock(p, pos2(count.left() - 11.0, rect.center().y), 14.0, true, t.text_dim);
+                    pad_options::paint_lock(p, pos2(left - 11.0, rect.center().y), 14.0, true, t.text_dim);
+                    left -= 20.0;
+                }
+                // Open in a window of its own (D-224).
+                let windowed = self.ctl.store.library.set_windows.iter().any(|w| w.set == set.id);
+                if windowed {
+                    pad_options::paint_window_mark(p, pos2(left - 11.0, rect.center().y), 13.0, t.text_dim);
                 }
                 let index = self.ctl.store.library.set_index(set.id).unwrap_or(0);
-                let resp = theme::role(resp, AxRole::Button, tips::set_label(&set.name, index, n_sets, set.tiles.len(), playing, set.locked), Some(is_sel));
-                let resp = theme::hint(resp, tips::set_row(&set.name, set.tiles.len(), playing, set.locked));
+                let resp = theme::role(resp, AxRole::Button, tips::set_label(&set.name, index, n_sets, set.tiles.len(), playing, set.locked, windowed), Some(is_sel));
+                let resp = theme::hint(resp, tips::set_row(&set.name, set.tiles.len(), playing, set.locked, windowed));
                 if resp.clicked() {
                     actions.extend(self.show_set(set.id));
                 }
                 if resp.double_clicked() {
                     actions.push(Action::StartRename(set.id));
                 }
-                self.set_row_menu(&resp, set.id, n_sets, set.locked, actions);
+                self.set_row_menu(&resp, set.id, n_sets, set.locked, windowed, actions);
             }
         });
         ui.with_layout(egui::Layout::bottom_up(Align::LEFT), |ui| {
@@ -2202,12 +2256,14 @@ impl StingerApp {
     #[allow(clippy::too_many_arguments)]
     fn tile_interaction(&self, ui: &Ui, resp: &egui::Response, tile: &Tile, index: usize, drops: bool, slot: Option<(usize, usize)>, columns: Option<usize>, actions: &mut Vec<Action>) {
         // No modes (M22, D-147): a click selects (⌘-click adds or takes out, Shift-click
-        // selects the rectangle from the selected tile, ⌘-Shift adds it, D-169); the
-        // second press of a double-click plays, as a key would, so a Hold tile plays while
-        // that press is held. Keys, Enter and Space always play.
+        // selects the rectangle from the selected tile, ⌘-Shift adds it, D-169; Alt-click
+        // takes it out, D-229); the second press of a double-click plays, as a key would,
+        // so a Hold tile plays while that press is held. Keys, Enter and Space always play.
         let m = ui.input(|i| i.modifiers);
         let locked = self.tile_locked(tile.id);
-        if resp.clicked() {
+        if resp.clicked() && m.alt && !(m.command || m.shift) {
+            actions.push(inv!("view.select", {"tile": tile.id, "remove": true}).into());
+        } else if resp.clicked() {
             let mut params = json!({"tile": tile.id, "add": m.command, "range": m.shift});
             if let Some(c) = columns.filter(|_| m.shift) {
                 params["columns"] = json!(c);
@@ -2215,22 +2271,24 @@ impl StingerApp {
             actions.push(Invocation::new("view.select", params).into());
         }
         if resp.is_pointer_button_down_on() && ui.input(|i| i.pointer.primary_pressed()) {
-            if !(m.command || m.shift) && second_press(ui, tile.id) {
+            // iPadOS: a finger down plays, as a key would (several fingers: app/touch.rs).
+            if !(m.command || m.shift || m.alt) && (cfg!(target_os = "ios") || second_press(ui, tile.id)) {
                 actions.push(Action::Press(tile.id));
             }
         } else if let Some(key) = activation_key(ui, resp) {
             actions.push(Action::KeyPress(tile.id, key));
         }
         // A tile clicked or dragged takes the keyboard focus, so the arrows and
-        // ⌘/Ctrl+arrows act on it next (not the master volume).
-        if resp.clicked() || resp.drag_started() {
+        // ⌘/Ctrl+arrows act on it next (not the master volume). Not an Alt-click: the
+        // focus would select the tile it just took out (`focus_selects`).
+        if (resp.clicked() && !m.alt) || resp.drag_started() {
             resp.request_focus();
         }
         if !locked {
             resp.dnd_set_drag_payload(tile.id);
             if let Some(src) = drops.then(|| resp.dnd_release_payload::<Uuid>()).flatten() {
                 if !self.drag_group(*src).contains(&tile.id) {
-                    actions.push(self.drag_move(*src, json!({"to": index + 1})));
+                    actions.push(self.drag_move(ui.ctx(), *src, json!({"to": index + 1})));
                 }
             }
         }
@@ -2273,6 +2331,10 @@ impl StingerApp {
             }
             if tile.image.is_some() && hint(ui.button("Remove Picture"), "Take the picture off this tile").clicked() {
                 actions.push(inv!("tile.pictureClear", {"tile": tile.id}).into());
+            }
+            let mute_tip = if tile.muted { "Let this tile be heard again, at its volume" } else { PadOption::Muted.tip() };
+            if hint(ui.button(if tile.muted { "Unmute" } else { "Mute" }), mute_tip).clicked() {
+                actions.push(inv!("tile.set", {"tile": tile.id, "muted": !tile.muted}).into());
             }
             let toggle_tip = if tile.disabled { "Let keys, pads and GO play this tile again" } else { "Make keys, pads and GO skip this tile" };
             if hint(ui.button(if tile.disabled { "Enable" } else { "Disable" }), toggle_tip).clicked() {
@@ -2470,6 +2532,8 @@ impl StingerApp {
 
     fn grid(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         let set = self.ctl.current_set();
+        // Fixed ids carry the set: a set window's board is drawn in the same pass (D-223).
+        let set_id = set.id;
         let lib = &self.ctl.store.library;
         // While searching, the board holds the hits from every set and no add slot.
         let hits = self.ctl.search.as_deref().map(|q| self.ctl.search_hits(q));
@@ -2543,8 +2607,13 @@ impl StingerApp {
             let over = pos.filter(|p| ui.clip_rect().contains(*p) && (from.is_some() || files > 0));
             let target = over.map(|p| grid::target_at(&base, slots.len(), |r, a| slots[r][a].is_none(), p));
             let active = rows_mode && target.is_some();
+            // Alt held: the drop makes copies and the pads stay (D-229), so the board
+            // shows them going in as files do.
+            let copying = from.is_some() && files == 0 && drag_copies(&ctx);
             // What each slot shows: the drop's result while dragging, else the set.
-            let shown: Grid<grid::Show> = if active {
+            let shown: Grid<grid::Show> = if active && copying {
+                grid::preview(&slots, &[], group.len(), target, columns)
+            } else if active {
                 grid::preview(&slots, &group, files, target, columns)
             } else {
                 slots.iter().map(|r| r.iter().map(|s| s.map(grid::Show::Pad)).collect()).collect()
@@ -2590,10 +2659,10 @@ impl StingerApp {
                         Some(grid::Show::Pad(i)) => Some(i),
                         Some(grid::Show::Ghost) => {
                             let ghost = glide(egui::Id::unique(("ghost", cell.row, cell.at)), rect);
-                            paint_ghost(ui.painter(), ghost, t.accent);
+                            paint_ghost(ui.painter(), ghost, if copying { t.meter_green } else { t.accent });
                             // The dragged pad keeps its widget (on the first ghost of
-                            // several), so its drag goes on.
-                            if let Some(src) = from.and_then(|f| tiles.get(f)).filter(|_| files == 0 && !held) {
+                            // several), so its drag goes on; a copy's pad is still there.
+                            if let Some(src) = from.and_then(|f| tiles.get(f)).filter(|_| files == 0 && !held && !copying) {
                                 ui.interact(ghost, egui::Id::unique(("tile", src.id)), Sense::click_and_drag());
                                 held = true;
                             }
@@ -2609,7 +2678,7 @@ impl StingerApp {
                     Some(flat - 1)
                 };
                 // A tile keeps its id wherever it moves, so keyboard focus follows it.
-                let id = i.and_then(|i| tiles.get(i)).map_or(egui::Id::unique("add-slot"), |t| egui::Id::unique(("tile", t.id)));
+                let id = i.and_then(|i| tiles.get(i)).map_or(egui::Id::unique(("add-slot", set_id)), |t| egui::Id::unique(("tile", t.id)));
                 let rect = if rows_mode { glide(id, rect) } else { rect };
                 let resp = ui.interact(rect, id, Sense::click_and_drag());
                 if let Some(&tile) = i.and_then(|i| tiles.get(i)) {
@@ -2659,7 +2728,7 @@ impl StingerApp {
                     }
                     if !rows_mode && !locked {
                         if let Some(src) = resp.dnd_release_payload::<Uuid>() {
-                            actions.push(self.drag_move(*src, json!({"to": u32::MAX})));
+                            actions.push(self.drag_move(ui.ctx(), *src, json!({"to": u32::MAX})));
                         }
                     }
                 }
@@ -2690,17 +2759,23 @@ impl StingerApp {
                             ui.painter().circle_filled(c, 13.0, t.accent);
                             ui.painter().text(c, Align2::CENTER_CENTER, count.to_string(), theme::bold(13.0), theme::ink_on(t.accent));
                         }
+                        if copying {
+                            paint_copy_badge(ui.painter(), r.left_top() + vec2(4.0, 4.0), t.meter_green);
+                        }
                     });
                 }
-                // A pad let go over the grid moves there.
+                // A pad let go over the grid moves there; with Alt, its copies go in
+                // there, on the board as it is.
                 if let (Some(_), true, Some(place)) = (from.filter(|_| released), active, target) {
-                    let src = egui::DragAndDrop::take_payload::<Uuid>(ui.ctx());
-                    if let (Some(src), Some(m)) = (src, grid::drag_move(&slots, &group, place)) {
+                    let src = egui::DragAndDrop::take_payload::<Uuid>(ui.ctx()).map(|s| *s);
+                    if let (Some(src), true) = (src, copying) {
+                        actions.push(self.drag_move(&ctx, src, grid::place_json(place)));
+                    } else if let (Some(src), Some(m)) = (src, grid::drag_move(&slots, &group, place)) {
                         let mut params = grid::place_json(m.place);
                         if m.leave_blank {
                             params["leaveBlank"] = json!(true);
                         }
-                        actions.push(self.drag_move(*src, params));
+                        actions.push(self.drag_move(&ctx, src, params));
                     }
                 }
                 file_marker = any_files && over.is_some() || any_files && files == 0;
@@ -2735,29 +2810,31 @@ impl StingerApp {
         }
     }
 
-    /// `tile.move` for a drag of `tile`: the tile, or the selection it's part of.
-    fn drag_move(&self, tile: Uuid, mut params: Value) -> Action {
+    /// `tile.move` for a drag of `tile`: the tile, or the selection it's part of; with
+    /// Alt held at the drop, `tile.copy` (D-229).
+    fn drag_move(&self, ctx: &egui::Context, tile: Uuid, mut params: Value) -> Action {
         match self.drag_group(tile).as_slice() {
             [one] => params["tile"] = json!(one),
             group => params["tiles"] = json!(group),
         }
-        Invocation::new("tile.move", params).into()
+        Invocation::new(if drag_copies(ctx) { "tile.copy" } else { "tile.move" }, params).into()
     }
 
     /// A pad (or the selection it's part of, D-219) dropped on a set in the sidebar
-    /// moves to that set's end; not into its own set, or into or out of a locked one.
+    /// moves to that set's end, or with Alt its copies go there (D-229); not moved into
+    /// its own set, or into or out of a locked one.
     fn drop_on_set(&self, resp: &egui::Response, set: Uuid, actions: &mut Vec<Action>) -> bool {
         let lib = &self.ctl.store.library;
         let Some(src) = egui::DragAndDrop::payload::<Uuid>(&resp.ctx) else { return false };
         let ok = match (lib.locate(*src), lib.set_index(set)) {
-            (Some((from, _)), Some(to)) => from != to && !lib.sets[from].locked && !lib.sets[to].locked,
+            (Some((from, _)), Some(to)) => (from != to || drag_copies(&resp.ctx)) && !lib.sets[from].locked && !lib.sets[to].locked,
             _ => false,
         };
         if !ok || !resp.contains_pointer() {
             return false;
         }
         if resp.dnd_release_payload::<Uuid>().is_some() {
-            actions.push(self.drag_move(*src, json!({"set": set})));
+            actions.push(self.drag_move(&resp.ctx, *src, json!({"set": set})));
         }
         true
     }
@@ -3068,7 +3145,7 @@ impl StingerApp {
                 actions.push(inv!("tile.add").into());
             }
             if let Some(src) = resp.dnd_release_payload::<Uuid>() {
-                actions.push(self.drag_move(*src, json!({"to": u32::MAX})));
+                actions.push(self.drag_move(ui.ctx(), *src, json!({"to": u32::MAX})));
             }
         });
         if hits.is_none() {
@@ -3386,6 +3463,9 @@ impl StingerApp {
             .show_separator_line(false)
             .show(ui, |ui| {
                 theme::name_panel(ui, egui::accesskit::Role::Toolbar, "Toolbar");
+                if !self.opts.in_window_menu {
+                    crate::titlebar::drag_area(ui, ui.max_rect().expand2(vec2(14.0, 8.0)));
+                }
                 self.toolbar(ui, actions)
             });
         egui::Panel::bottom("status")
@@ -3446,6 +3526,12 @@ impl StingerApp {
             .show_separator_line(false)
             .show(ui, |ui| {
                 theme::name_panel(ui, egui::accesskit::Role::Toolbar, "Toolbar");
+                // The traffic lights show in a black pill in the elbow's corner while the
+                // pointer is there (D-232).
+                if !self.opts.in_window_menu {
+                    let pill = panel::lights_pill_at(area, crate::titlebar::pill_size(ui.ctx()));
+                    crate::titlebar::drag_area_pill_at(ui, ui.max_rect(), pill);
+                }
                 self.panel_toolbar(ui, area, actions)
             });
         egui::Panel::bottom("status")
@@ -3525,22 +3611,41 @@ impl StingerApp {
         if self.shots.is_empty() {
             return;
         }
-        self.shots_in_flight.push_back(std::mem::take(&mut self.shots));
-        let (tx, wake) = (self.shot_tx.clone(), ctx.clone());
+        let (tx, wake, batch) = (self.shot_tx.clone(), ctx.clone(), std::mem::take(&mut self.shots));
+        self.shots_pending += 1;
         ctx.request_screenshot(move |img| {
-            tx.send(img).ok();
+            tx.send((batch, img)).ok();
             wake.request_repaint();
         });
     }
 
-    /// `LEADSTINGER_SNAPSHOT`: after `snapshot_frames` frames, save a screenshot and quit.
-    /// `view.screenshot` saves one without quitting, once the ui has settled.
+    /// Hand the set windows their settled `view.screenshot {window}` shots: each window
+    /// captures itself on its pass (D-226).
+    fn capture_windows(&mut self) {
+        for (set, path) in std::mem::take(&mut self.window_shots) {
+            match self.set_wins.get_mut(&set) {
+                Some(w) => w.shots.push((path, false)),
+                None => self.ctl.notify_error("Couldn't save the screenshot: that set's window has closed"),
+            }
+        }
+    }
+
+    /// `LEADSTINGER_SNAPSHOT`: after `snapshot_frames` frames, save a screenshot (and one
+    /// of each set window, beside it) and quit. `view.screenshot` saves one without
+    /// quitting, once the ui has settled.
     fn snapshot(&mut self, ctx: &egui::Context) {
         if let Some(path) = self.opts.snapshot.clone() {
             ctx.request_repaint();
             if self.frame >= self.opts.snapshot_frames && !self.snapshot_requested {
                 self.snapshot_requested = true;
-                self.shots.push((path, true));
+                self.shots.push((path.clone(), true));
+                self.quit_after = 1;
+                for (n, w) in self.ctl.store.library.set_windows.iter().enumerate() {
+                    if let Some(win) = self.set_wins.get_mut(&w.set) {
+                        win.shots.push((window_shot_path(&path, n + 1), true));
+                        self.quit_after += 1;
+                    }
+                }
                 self.capture(ctx);
             }
         }
@@ -3549,6 +3654,7 @@ impl StingerApp {
             if *frames >= SHOT_SETTLE.0 && since.elapsed() >= SHOT_SETTLE.1 {
                 self.shot_settle = None;
                 self.capture(ctx);
+                self.capture_windows();
             }
         }
     }
@@ -3556,8 +3662,8 @@ impl StingerApp {
     /// Save the captured frames that have arrived on `shot_rx`. Runs in `logic`, so a
     /// hidden window saves its capture without waiting for another ui pass.
     fn save_shots(&mut self, ctx: &egui::Context) {
-        while let Ok(img) = self.shot_rx.try_recv() {
-            let Some(batch) = self.shots_in_flight.pop_front() else { continue };
+        while let Ok((batch, img)) = self.shot_rx.try_recv() {
+            self.shots_pending = self.shots_pending.saturating_sub(1);
             let bytes: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_array()).collect();
             let mut quit = false;
             for (path, then_quit) in batch {
@@ -3568,13 +3674,24 @@ impl StingerApp {
                 quit |= then_quit;
             }
             if quit {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                self.quit_after = self.quit_after.saturating_sub(1);
+                if self.quit_after == 0 {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
             }
         }
-        if !self.shots_in_flight.is_empty() {
+        if self.shots_pending > 0 {
             ctx.request_repaint();
         }
     }
+}
+
+/// Where a `LEADSTINGER_SNAPSHOT` run saves the `n`th set window (from 1): beside the
+/// main shot, `shot.png` → `shot-window-1.png`.
+fn window_shot_path(main: &std::path::Path, n: usize) -> PathBuf {
+    let stem = main.file_stem().and_then(|s| s.to_str()).unwrap_or("snapshot");
+    let ext = main.extension().and_then(|s| s.to_str()).unwrap_or("png");
+    main.with_file_name(format!("{stem}-window-{n}.{ext}"))
 }
 
 impl eframe::App for StingerApp {
@@ -3589,6 +3706,13 @@ impl eframe::App for StingerApp {
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.ctl.0 = Some(self.lender.borrow());
+        // iPadOS: stay clear of the status bar and the home indicator (the safe area).
+        #[cfg(target_os = "ios")]
+        {
+            let safe = ui.ctx().content_rect();
+            ui.scope_builder(egui::UiBuilder::new().max_rect(safe), |ui| self.frame_ui(ui));
+        }
+        #[cfg(not(target_os = "ios"))]
         self.frame_ui(ui);
         self.lender.give_back(self.ctl.0.take().expect("borrowed for this frame"));
     }
@@ -3596,6 +3720,9 @@ impl eframe::App for StingerApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
         // The drag:/files: script steps: press on the tile, glide to the point, stay down.
         if let Some((files, k, to, step)) = &mut self.script_drag {
+            if self.script_drag_alt {
+                raw_input.events.push(egui::Event::ModifiersChanged(Modifiers::ALT));
+            }
             if *files {
                 raw_input.hovered_files = (0..*k).map(|i| egui::HoveredFile { path: Some(PathBuf::from(format!("Sound {}.wav", i + 1))), ..Default::default() }).collect();
                 raw_input.events.push(egui::Event::PointerMoved(*to));
@@ -3719,9 +3846,14 @@ impl StingerApp {
                 .show_separator_line(false)
                 .show(ui, |ui| {
                     theme::name_panel(ui, egui::accesskit::Role::Region, "Menu bar");
-                    if let Some(c) = menu::menu_bar(ui, &menus) {
-                        menu_commands.push(c);
-                    }
+                    // On macOS (with the in-window menus) it's the window's top strip.
+                    crate::titlebar::drag_area(ui, ui.max_rect().expand2(vec2(8.0, 2.0)));
+                    ui.horizontal(|ui| {
+                        ui.add_space((crate::titlebar::inset(ui.ctx()).x - 8.0).max(0.0));
+                        if let Some(c) = menu::menu_bar(ui, &menus) {
+                            menu_commands.push(c);
+                        }
+                    });
                 });
         }
         // Zoomed in, a small window holds fewer points than the layouts are made for (the
@@ -3766,6 +3898,9 @@ impl StingerApp {
                 let r = Rect::from_min_size(pos + vec2(8.0, 8.0), vec2(150.0, 32.0));
                 painter.rect_filled(r, 6.0, theme::console_tile(ctx, tile.color).gamma_multiply(0.9));
                 painter.text(r.left_center() + vec2(8.0, 0.0), Align2::LEFT_CENTER, &tile.title, FontId::proportional(14.0), Color32::WHITE);
+                if drag_copies(ctx) {
+                    paint_copy_badge(&painter, r.right_center() - vec2(14.0, 0.0), Tokens::get(ctx).meter_green);
+                }
             }
         }
 
@@ -3777,13 +3912,18 @@ impl StingerApp {
             }
         }
 
+        #[cfg(target_os = "ios")]
+        self.more_fingers(ctx, &mut actions);
         for a in actions {
             self.apply(a);
         }
         theme::focus_ring(ctx);
         self.handle_effects(ctx);
-        self.save_and_schedule(ctx);
         self.snapshot(ctx);
+        // The sets open in windows of their own (D-222), each its own pass.
+        self.set_windows(ctx);
+        self.handle_effects(ctx);
+        self.save_and_schedule(ctx);
     }
 
     /// Save when due (or now, when the window is closing), and ask for the next frame
@@ -4006,17 +4146,17 @@ fn key_combo(key: Key, m: Modifiers) -> String {
 impl StingerApp {
     /// A set row's menu: on a right-click, or held open under the row by a `setmenu`
     /// script step (egui opens a context menu only at the pointer).
-    fn set_row_menu(&self, resp: &egui::Response, set: Uuid, n_sets: usize, locked: bool, actions: &mut Vec<Action>) {
+    fn set_row_menu(&self, resp: &egui::Response, set: Uuid, n_sets: usize, locked: bool, windowed: bool, actions: &mut Vec<Action>) {
         if self.set_menu_script == Some(set) {
-            egui::Popup::menu(resp).open_memory(Some(egui::SetOpenCommand::Bool(true))).show(|ui| set_menu(ui, set, n_sets, locked, actions));
+            egui::Popup::menu(resp).open_memory(Some(egui::SetOpenCommand::Bool(true))).show(|ui| set_menu(ui, set, n_sets, locked, windowed, actions));
         } else {
-            resp.context_menu(|ui| set_menu(ui, set, n_sets, locked, actions));
+            resp.context_menu(|ui| set_menu(ui, set, n_sets, locked, windowed, actions));
         }
     }
 }
 
 /// A set's context menu, in the sidebar of either theme.
-fn set_menu(ui: &mut Ui, set: Uuid, n_sets: usize, locked: bool, actions: &mut Vec<Action>) {
+fn set_menu(ui: &mut Ui, set: Uuid, n_sets: usize, locked: bool, windowed: bool, actions: &mut Vec<Action>) {
     if theme::hint(ui.button("Rename"), "Rename this set in the sidebar").clicked() {
         actions.push(Action::StartRename(set));
     }
@@ -4030,6 +4170,12 @@ fn set_menu(ui: &mut Ui, set: Uuid, n_sets: usize, locked: bool, actions: &mut V
     ui.separator();
     // Lock or unlock this set, whichever applies (t-m22-set-menu-lock).
     let (cmd, label, tip) = if locked { ("set.unlock", "Unlock Set", tips::UNLOCK) } else { ("set.lock", "Lock Set", tips::LOCK) };
+    if theme::hint(ui.button(label), tip).clicked() {
+        actions.push(Invocation::new(cmd, json!({"set": set})).into());
+    }
+    ui.separator();
+    // A window of its own, to put on another monitor or workspace (D-224).
+    let (cmd, label, tip) = if windowed { ("window.close", "Close Window", tips::CLOSE_WINDOW) } else { ("window.open", "Open in New Window", tips::OPEN_WINDOW) };
     if theme::hint(ui.button(label), tip).clicked() {
         actions.push(Invocation::new(cmd, json!({"set": set})).into());
     }
@@ -4272,17 +4418,20 @@ fn tile_changes(orig: &Tile, t: &Tile) -> Invocation {
         }
     };
     put("title", t.title != orig.title, json!(t.title));
+    put("emoji", t.emoji != orig.emoji, json!(t.emoji));
     put("color", t.color != orig.color, json!(t.color));
     put("hold", t.press.hold != orig.press.hold, json!(t.press.hold));
     put("pausable", t.press.pausable != orig.press.pausable, json!(t.press.pausable));
     put("oneShot", t.press.one_shot != orig.press.one_shot, json!(t.press.one_shot));
     put("volume", t.volume != orig.volume, json!(t.volume));
+    put("muted", t.muted != orig.muted, json!(t.muted));
     put("gainDb", t.gain_db != orig.gain_db, json!(t.gain_db));
     put("speed", t.speed != orig.speed, json!(t.speed));
     put("pitch", t.pitch != orig.pitch, json!(t.pitch));
     put("channels", t.channel_mix != orig.channel_mix, json!(t.channel_mix));
     put("sends", t.sends != orig.sends, json!(t.sends.iter().map(|s| json!({"output": s.output, "gainDb": s.gain_db})).collect::<Vec<_>>()));
     put("duck", t.duck != orig.duck, json!(t.duck));
+    put("duckLevel", t.duck_db != orig.duck_db, json!(t.duck_db));
     put("fadeIn", t.fade_in != orig.fade_in, json!(t.fade_in));
     put("fadeOut", t.fade_out != orig.fade_out, json!(t.fade_out));
     put("stopFade", t.stop_fade != orig.stop_fade, json!(t.stop_fade));
@@ -4613,6 +4762,20 @@ const ROW_MIN_HEIGHT: f32 = 72.0;
 
 /// Where a dragged pad or a dropped file goes (D-141): a slot tinted and outlined in the
 /// accent.
+/// Alt held while a pad is dragged: the drop copies it (D-229), as Finder's Option-drag.
+fn drag_copies(ctx: &egui::Context) -> bool {
+    ctx.input(|i| i.modifiers.alt)
+}
+
+/// The "+" on a pad dragged with Alt, centred at `c`: its drop makes a copy (D-229).
+fn paint_copy_badge(p: &egui::Painter, c: Pos2, green: Color32) {
+    p.circle_filled(c, 11.0, green);
+    p.circle_stroke(c, 11.0, Stroke::new(1.5_f32, Color32::WHITE));
+    let ink = theme::ink_on(green);
+    p.line_segment([c - vec2(5.0, 0.0), c + vec2(5.0, 0.0)], Stroke::new(2.5_f32, ink));
+    p.line_segment([c - vec2(0.0, 5.0), c + vec2(0.0, 5.0)], Stroke::new(2.5_f32, ink));
+}
+
 fn paint_ghost(p: &egui::Painter, rect: Rect, accent: Color32) {
     p.rect_filled(rect, 6.0, theme::with_alpha(accent, 0.14));
     dashed_outline(p, rect.shrink(1.0), Stroke::new(2.0_f32, accent));
@@ -4649,6 +4812,27 @@ const TITLE_LINES: usize = 4;
 /// The largest of `sizes` (largest first) at which every word of `title` fits `room`, so
 /// a narrow pad's title wraps between words instead of inside one (D-217); the smallest
 /// when none does, and then a long word breaks.
+/// Below this much room for its title a pad leaves its emoji off (D-253).
+const EMOJI_ROOM_MIN: f32 = 64.0;
+
+/// What a pad writes as its title: the tile's emoji, a space, then its title (D-253); the
+/// title alone on a pad with less than [`EMOJI_ROOM_MIN`] of room, or with no emoji. The
+/// emoji are drawn in the title's colour and size by egui's monochrome emoji face; one
+/// that face lacks (newer ones, skin tones) is left off rather than drawn as a box.
+fn pad_title(ui: &Ui, tile: &Tile, room: f32) -> String {
+    pad_title_with(tile, room, |c| ui.fonts_mut(|f| f.has_glyph(&FontId::proportional(13.0), c)))
+}
+
+/// [`pad_title`], with `drawable` saying which characters the fonts have.
+fn pad_title_with(tile: &Tile, room: f32, drawable: impl Fn(char) -> bool) -> String {
+    let emoji: String = tile.emoji.chars().filter(|&c| crate::model::emoji_modifier(c) || drawable(c)).collect();
+    if room < EMOJI_ROOM_MIN || emoji.chars().all(crate::model::emoji_modifier) {
+        tile.title.clone()
+    } else {
+        format!("{emoji} {}", tile.title)
+    }
+}
+
 fn title_size(ui: &Ui, title: &str, room: f32, sizes: &[f32], font: impl Fn(f32) -> egui::FontId) -> f32 {
     let widest = |size: f32| ui.fonts_mut(|f| title.split_whitespace().map(|w| f.layout_no_wrap(w.to_owned(), font(size), Color32::WHITE).size().x).fold(0.0, f32::max));
     // A little to spare: the wrap counts a glyph's full advance.
@@ -4759,9 +4943,10 @@ fn paint_tile(ui: &Ui, rect: Rect, tile: &Tile, status: Option<&VoiceStatus>, ti
         rows -= 1;
     }
     let room = (right - x).max(10.0);
-    let size = title_size(ui, &tile.title, room, &[13.0, 11.5, 10.0], theme::semibold);
+    let text = pad_title(ui, tile, room);
+    let size = title_size(ui, &text, room, &[13.0, 11.5, 10.0], theme::semibold);
     let title = ui.fonts_mut(|fonts| {
-        let mut job = egui::text::LayoutJob::simple(tile.title.clone(), theme::semibold(size), ink, room);
+        let mut job = egui::text::LayoutJob::simple(text, theme::semibold(size), ink, room);
         job.wrap.max_rows = rows;
         fonts.layout_job(job)
     });
@@ -5031,3 +5216,4 @@ fn icon_key(ui: &mut Ui, on: bool, paint: fn(&egui::Painter, egui::Pos2, f32, bo
     paint(ui.painter(), c, 12.0, false, ink);
     resp
 }
+

@@ -153,6 +153,19 @@ fn bottom_mid(g: &Geo) -> Option<f32> {
     (mid + 60.0 < g.size.x - M - 300.0).then_some(mid)
 }
 
+/// Where the macOS traffic lights' black pill goes (D-232): its top left, for a pill of
+/// `size`, nested in the top elbow's outer curve with a little orange all round, so it
+/// stands on its own instead of running into the frame's black edge.
+pub fn lights_pill_at(area: Rect, size: Vec2) -> Pos2 {
+    const ROOM: f32 = 3.0;
+    let (h, top) = (size.y, M + 2.0 * ROOM);
+    // The cap's centre is at least its radius plus ROOM inside the curve.
+    let c = M + R_OUT as f32;
+    let (reach, dy) = (R_OUT as f32 - h / 2.0 - ROOM, c - (top + h / 2.0));
+    let x = if reach > dy { c - (reach * reach - dy * dy).sqrt() - h / 2.0 } else { c };
+    area.min + vec2(x.max(top), top)
+}
+
 fn r(g: &Geo, x0: f32, y0: f32, x1: f32, y1: f32) -> Rect {
     Rect::from_min_max(g.o + vec2(x0, y0), g.o + vec2(x1, y1))
 }
@@ -565,15 +578,21 @@ impl StingerApp {
                 // The lock at the block's top right, in black like its lettering.
                 super::pad_options::paint_lock(p, rect.right_top() + vec2(-16.0, 14.0), 14.0, true, pal.black);
             }
-            let resp = theme::role(resp, AxRole::Button, tips::set_label(&set.name, i, n_sets, set.tiles.len(), playing, set.locked), Some(on));
-            let resp = theme::hint(resp, tips::set_row(&set.name, set.tiles.len(), playing, set.locked));
+            // Open in a window of its own (D-224): beside the lock.
+            let windowed = self.ctl.store.library.set_windows.iter().any(|w| w.set == set.id);
+            if windowed {
+                let x = if set.locked { -36.0 } else { -16.0 };
+                super::pad_options::paint_window_mark(p, rect.right_top() + vec2(x, 14.0), 13.0, pal.black);
+            }
+            let resp = theme::role(resp, AxRole::Button, tips::set_label(&set.name, i, n_sets, set.tiles.len(), playing, set.locked, windowed), Some(on));
+            let resp = theme::hint(resp, tips::set_row(&set.name, set.tiles.len(), playing, set.locked, windowed));
             if resp.clicked() {
                 actions.extend(self.show_set(set.id));
             }
             if resp.double_clicked() {
                 actions.push(Action::StartRename(set.id));
             }
-            self.set_row_menu(&resp, set.id, n_sets, set.locked, actions);
+            self.set_row_menu(&resp, set.id, n_sets, set.locked, windowed, actions);
         }
         // Amber edge bars say there are more sets above or below.
         if scroll > 0.5 {
@@ -690,7 +709,7 @@ impl StingerApp {
         let notice = self.ctl.notice.as_ref().is_some_and(|n| n.text == right);
         self.notice_hovered = false;
         if elided {
-            let resp = ui.interact(rect, Id::unique("panel-status-right"), Sense::hover()).on_hover_text(right);
+            let resp = ui.interact(rect, Id::unique("panel-status-right"), Sense::hover()).on_hover_text(crate::theme::platform_keys(&right));
             self.notice_hovered = notice && resp.hovered();
         }
     }
@@ -1099,11 +1118,12 @@ pub fn paint_tile(ui: &Ui, rect: Rect, tile: &Tile, status: Option<&VoiceStatus>
     }
     let right = rect.right() - if narrow { 8.0 } else { 12.0 };
     let room = (right - title_left).max(20.0);
+    let text = super::pad_title(ui, tile, room).to_uppercase();
     // A stacked title that doesn't fit at full size steps down once before wrapping; a
     // narrow one steps down until its longest word fits (D-217).
     let size = if narrow {
-        super::title_size(ui, &tile.title.to_uppercase(), room, &[18.0, 15.0, 13.0, 11.0], condensed)
-    } else if stacked && ui.fonts_mut(|f| f.layout_no_wrap(tile.title.to_uppercase(), condensed(22.0), ink).size().x) > room {
+        super::title_size(ui, &text, room, &[18.0, 15.0, 13.0, 11.0], condensed)
+    } else if stacked && ui.fonts_mut(|f| f.layout_no_wrap(text.clone(), condensed(22.0), ink).size().x) > room {
         18.0
     } else {
         22.0
@@ -1115,7 +1135,7 @@ pub fn paint_tile(ui: &Ui, rect: Rect, tile: &Tile, status: Option<&VoiceStatus>
     let most = if narrow { usize::MAX } else { super::TITLE_LINES };
     let rows = (((rect.bottom() - 6.0 - ceiling - 4.0) / line_h).floor() as usize).clamp(1, most);
     let galley = ui.fonts_mut(|fonts| {
-        let mut job = egui::text::LayoutJob::simple(tile.title.to_uppercase(), condensed(size), ink, room);
+        let mut job = egui::text::LayoutJob::simple(text, condensed(size), ink, room);
         job.wrap.max_rows = rows;
         job.halign = Align::RIGHT;
         fonts.layout_job(job)
@@ -1343,6 +1363,20 @@ pub fn paint_list_row(ui: &Ui, rect: Rect, index: usize, tile: &Tile, status: Op
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_lights_pill_nests_in_the_top_elbows_curve() {
+        let area = Rect::from_min_size(pos2(0.0, 0.0), vec2(1280.0, 800.0));
+        for size in [vec2(70.0, 32.0), vec2(35.0, 16.0), vec2(140.0, 64.0) / 2.0] {
+            let at = lights_pill_at(area, size);
+            assert_eq!(at.y, M + 6.0);
+            // Its left cap stays inside the curve, with orange round it.
+            let cap = at + vec2(size.y / 2.0, size.y / 2.0);
+            let centre = pos2(M + R_OUT as f32, M + R_OUT as f32);
+            assert!(cap.distance(centre) <= R_OUT as f32 - size.y / 2.0 - 2.9, "{size:?}: {at:?}");
+            assert!(at.x + size.x < M + COL, "{size:?}: inside the column");
+        }
+    }
 
     /// Where `block_label` puts a label's ink in a block of `size`.
     fn label_ink(ctx: &egui::Context, size: Vec2, text: &str, font: FontId) -> (Rect, Rect) {

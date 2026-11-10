@@ -338,7 +338,7 @@ impl FadeCurve {
 }
 
 /// A tile's part in ducking: while any `Ducks` tile plays (or the duck is held), every
-/// `Ducked` tile dips by the library's duck amount.
+/// `Ducked` tile dips by its own duck level (`Tile::duck_db`), or the library's duck amount.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Duck {
@@ -457,6 +457,63 @@ pub const SPEED_MAX: f32 = 2.0;
 
 /// How far ducked tiles dip by default, in dB.
 pub const DUCK_DB_DEFAULT: f32 = -12.0;
+/// The deepest a duck goes, in dB (the library's amount and a bed's own level).
+pub const DUCK_DB_MIN: f32 = -40.0;
+
+/// A duck level in range: `DUCK_DB_MIN` to 0 dB.
+pub fn clamp_duck_db(db: f32) -> f32 {
+    db.clamp(DUCK_DB_MIN, 0.0)
+}
+
+/// The most characters a tile's emoji keeps (D-253): a few emoji, joined ones included
+/// (a family of four is seven characters).
+pub const EMOJI_MAX_CHARS: usize = 24;
+
+/// Characters that only join or modify an emoji: the zero-width joiner, the text and
+/// emoji variation selectors, the keycap mark and the tag characters of a flag.
+pub fn emoji_modifier(c: char) -> bool {
+    matches!(c as u32, 0x200D | 0xFE0E | 0xFE0F | 0x20E3 | 0xE0020..=0xE007F)
+}
+
+/// A pictograph or symbol that is drawn as an emoji (regional indicators and skin tones
+/// included), or a modifier.
+fn emoji_char(c: char) -> bool {
+    emoji_modifier(c)
+        || matches!(
+            c as u32,
+            0x00A9 | 0x00AE | 0x203C | 0x2049 | 0x2122 | 0x2139 | 0x2194..=0x21AA | 0x231A..=0x23FF | 0x24C2 | 0x25AA..=0x25FE
+                | 0x2600..=0x27BF | 0x2934 | 0x2935 | 0x2B05..=0x2B55 | 0x3030 | 0x303D | 0x3297 | 0x3299 | 0x1F000..=0x1FAFF
+        )
+}
+
+/// Which characters of `s` belong to emoji: [`emoji_char`]s, and a digit, # or * that a
+/// keycap mark follows (1️⃣).
+fn emoji_mask(s: &[char]) -> Vec<bool> {
+    (0..s.len())
+        .map(|i| emoji_char(s[i]) || matches!(s[i], '0'..='9' | '#' | '*') && s[i + 1..].iter().take(2).any(|&n| n == '\u{20E3}'))
+        .collect()
+}
+
+/// Whether `s` is one or more emoji and nothing else (no letters, spaces or bare digits).
+pub fn is_emoji(s: &str) -> bool {
+    let chars: Vec<char> = s.chars().collect();
+    chars.iter().any(|&c| !emoji_modifier(c)) && emoji_mask(&chars).into_iter().all(|e| e)
+}
+
+/// The emoji in `s` with everything else dropped, at most [`EMOJI_MAX_CHARS`]: what a
+/// tile keeps of what was typed, pasted or imported. A joiner left dangling at the end
+/// goes too, and so does a string of modifiers alone.
+pub fn emoji_only(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out: Vec<char> = chars.iter().zip(emoji_mask(&chars)).filter(|(_, e)| *e).map(|(c, _)| *c).take(EMOJI_MAX_CHARS).collect();
+    while out.last() == Some(&'\u{200D}') {
+        out.pop();
+    }
+    if out.iter().all(|&c| emoji_modifier(c)) {
+        return String::new();
+    }
+    out.into_iter().collect()
+}
 
 /// The app's visual design. Console is the SoundCraft-style mixing desk; Panel is a retro
 /// sci-fi control-panel look (always on black).
@@ -624,6 +681,10 @@ impl Default for TileAction {
 pub struct Tile {
     pub id: Uuid,
     pub title: String,
+    /// An emoji or a few, drawn before the title on the pad (D-253); empty for none.
+    /// Only emoji ([`emoji_only`]).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub emoji: String,
     /// File name inside the library's `Media/` folder.
     pub file: Option<String>,
     pub color: TileColor,
@@ -641,7 +702,15 @@ pub struct Tile {
     /// Extra gain in dB (±GAIN_DB_MAX) on top of `volume`; set by hand or by
     /// `tile.normalize`, so quiet clips can be raised.
     pub gain_db: f32,
+    /// Muted: it plays at zero gain on every send, keeping its timing, cue links, ducking
+    /// and Solo; its volume is kept for when it's unmuted.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub muted: bool,
     pub duck: Duck,
+    /// A bed's own duck level, dB below its level (−40 to 0, like the library's
+    /// `duck_db`); `None` follows the library's amount.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duck_db: Option<f32>,
     /// Playback speed, 0.5–2; the pitch follows (like tape).
     pub speed: f32,
     /// Transposition in semitones (±12) that keeps the speed; rendered once, offline.
@@ -719,6 +788,7 @@ impl Default for Tile {
         Tile {
             id: Uuid::new_v4(),
             title: "Untitled".into(),
+            emoji: String::new(),
             file: None,
             color: TileColor::default(),
             hotkey: None,
@@ -726,7 +796,9 @@ impl Default for Tile {
             press: PressOptions::default(),
             volume: 1.0,
             gain_db: 0.0,
+            muted: false,
             duck: Duck::None,
+            duck_db: None,
             speed: 1.0,
             pitch: 0.0,
             looping: false,
@@ -781,8 +853,11 @@ impl Tile {
         Tile { id: Uuid::new_v4(), hotkey: None, hotkey_manual: false, ..self.clone() }
     }
 
-    /// The linear gain the mixer applies: volume times the dB gain.
+    /// The linear gain the mixer applies: volume times the dB gain, or 0 while muted.
     pub fn gain(&self) -> f32 {
+        if self.muted {
+            return 0.0;
+        }
         self.volume * crate::logic::db_to_gain(self.gain_db)
     }
 }
@@ -950,7 +1025,32 @@ pub struct Library {
     /// A QuipClipper link the system opens asks before importing, even from a connected
     /// server (`settings.quipAskEachImport`; off by default, D-135).
     pub quip_ask_each: bool,
+    /// Sets open in windows of their own (`window.open`), in the order they were opened,
+    /// with where each was last: reopened at launch (D-225).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub set_windows: Vec<SetWindow>,
 }
+
+/// A set open in a window of its own, and where that window was (`window.open`). The
+/// place is in the desktop's logical points, so it doesn't change with the zoom; a
+/// compositor that keeps window positions to itself (Wayland) leaves `x` and `y` unset.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SetWindow {
+    pub set: Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub x: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub y: Option<f32>,
+    /// The inside of the window, without its title bar.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<f32>,
+}
+
+/// The smallest a set window gets, in points: a few pads, or a short cue list.
+pub const SET_WINDOW_MIN: [f32; 2] = [360.0, 240.0];
 
 /// UI zoom limits and the steps ⌘/Ctrl + and − move through, in percent.
 pub const ZOOM_MIN: u32 = 50;
@@ -1006,6 +1106,7 @@ impl Default for Library {
             speak_cues: false,
             quip_badge: true,
             quip_ask_each: false,
+            set_windows: Vec::new(),
         }
     }
 }
@@ -1085,10 +1186,20 @@ impl Library {
         if !self.sets.iter().any(|s| Some(s.id) == self.selected_set) {
             self.selected_set = Some(self.sets[0].id);
         }
+        // A window for a set that's gone closes; one set has one window.
+        let mut seen = std::collections::HashSet::new();
+        let sets = &self.sets;
+        self.set_windows.retain(|w| sets.iter().any(|s| s.id == w.set) && seen.insert(w.set));
+        for w in &mut self.set_windows {
+            let ok = |v: Option<f32>| v.filter(|v| v.is_finite() && v.abs() < 100_000.0);
+            (w.x, w.y) = (ok(w.x), ok(w.y));
+            w.width = ok(w.width).map(|v| v.max(SET_WINDOW_MIN[0]));
+            w.height = ok(w.height).map(|v| v.max(SET_WINDOW_MIN[1]));
+        }
         self.master_volume = self.master_volume.clamp(0.0, 1.0);
         self.stop_all_fade = self.stop_all_fade.clamp(0.0, 10.0);
         let finite = |v: f32, d: f32| if v.is_finite() { v } else { d };
-        self.duck_db = finite(self.duck_db, DUCK_DB_DEFAULT).clamp(-40.0, 0.0);
+        self.duck_db = clamp_duck_db(finite(self.duck_db, DUCK_DB_DEFAULT));
         self.duck_attack = finite(self.duck_attack, 0.05).clamp(0.0, 5.0);
         self.duck_release = finite(self.duck_release, 0.4).clamp(0.0, 5.0);
         self.replay_seconds = self.replay_seconds.min(REPLAY_MAX);
@@ -1106,6 +1217,8 @@ impl Library {
                 t.pitch = if t.pitch.is_finite() { t.pitch.clamp(-crate::pitch::PITCH_MAX, crate::pitch::PITCH_MAX) } else { 0.0 };
                 t.speed = if t.speed.is_finite() { t.speed.clamp(SPEED_MIN, SPEED_MAX) } else { 1.0 };
                 t.gain_db = if t.gain_db.is_finite() { t.gain_db.clamp(-GAIN_DB_MAX, GAIN_DB_MAX) } else { 0.0 };
+                t.duck_db = t.duck_db.filter(|v| v.is_finite()).map(clamp_duck_db);
+                t.emoji = emoji_only(&t.emoji);
                 t.fade_in = t.fade_in.max(0.0);
                 t.fade_out = t.fade_out.max(0.0);
                 t.stop_fade = if t.stop_fade.is_finite() { t.stop_fade.clamp(0.0, 10.0) } else { 0.0 };
@@ -1216,6 +1329,38 @@ mod tests {
         let json = serde_json::to_string(&lib).unwrap();
         let back: Library = serde_json::from_str(&json).unwrap();
         assert_eq!(lib, back);
+    }
+
+    /// Sets open in windows of their own (D-225) are kept with their places, and a library
+    /// without any writes no `set_windows` at all.
+    #[test]
+    fn set_windows_round_trip_and_repair() {
+        let mut lib = Library::starter();
+        let plain = serde_json::to_string(&lib).unwrap();
+        assert!(!plain.contains("set_windows"), "no windows: nothing written");
+        let set = lib.sets[0].id;
+        lib.set_windows.push(SetWindow { set, x: Some(1920.0), y: Some(-40.0), width: Some(800.0), height: Some(600.0) });
+        // Wayland: only the size.
+        let second = SoundSet::named("Cues");
+        lib.set_windows.push(SetWindow { set: second.id, width: Some(500.0), height: Some(400.0), ..Default::default() });
+        lib.sets.push(second);
+        let json = serde_json::to_string(&lib).unwrap();
+        assert!(!json.contains("\"x\":null"), "unknown positions are left out: {json}");
+        let back: Library = serde_json::from_str(&json).unwrap();
+        assert_eq!(lib, back);
+
+        // A window for a set that's gone, a second window for one set, and nonsense sizes
+        // are repaired.
+        let mut lib = back;
+        lib.set_windows.push(SetWindow { set: Uuid::new_v4(), ..Default::default() });
+        lib.set_windows.push(SetWindow { set, x: Some(5.0), ..Default::default() });
+        lib.set_windows[1].width = Some(10.0);
+        lib.set_windows[1].height = Some(f32::NAN);
+        lib.normalize();
+        assert_eq!(lib.set_windows.len(), 2);
+        assert_eq!(lib.set_windows[0].x, Some(1920.0), "the first window for a set stays");
+        assert_eq!(lib.set_windows[1].width, Some(SET_WINDOW_MIN[0]));
+        assert_eq!(lib.set_windows[1].height, None);
     }
 
     #[test]
@@ -1381,6 +1526,77 @@ mod tests {
         assert!(lib.show_waveforms);
         assert!(lib.show_meters, "meters are on in older libraries");
         assert!(!lib.colored_pads, "older libraries get the dark pads (D-152)");
+    }
+
+    /// A tile's emoji (D-253): only emoji, joined ones and keycaps included, round-trips
+    /// and is written only when set.
+    #[test]
+    fn emoji_are_kept_and_everything_else_dropped() {
+        for e in ["🐕", "🌲\u{1F99C}", "🐕\u{200D}\u{1F9BA}", "👨\u{200D}👩\u{200D}👧\u{200D}👦", "1\u{FE0F}\u{20E3}", "🇺🇸", "❤\u{FE0F}", "👍\u{1F3FD}", "☕"] {
+            assert!(is_emoji(e), "{e:?}");
+            assert_eq!(emoji_only(e), e);
+        }
+        for not in ["", " ", "a", "1", "Dog", "🐕 dog", "\u{FE0F}", "—", "♪x"] {
+            assert!(!is_emoji(not), "{not:?}");
+        }
+        assert_eq!(emoji_only(" 🐕 Dog 🌲!"), "🐕🌲");
+        assert_eq!(emoji_only("🐕\u{200D}"), "🐕", "a dangling joiner goes");
+        assert_eq!(emoji_only("\u{FE0F}x"), "", "modifiers alone are nothing");
+        assert_eq!(emoji_only(&"🐕".repeat(40)).chars().count(), EMOJI_MAX_CHARS);
+        let mut lib = Library::starter();
+        lib.sets[0].tiles.push(Tile { title: "Dog".into(), emoji: "🐕".into(), ..Default::default() });
+        lib.sets[0].tiles.push(Tile { title: "Cat".into(), ..Default::default() });
+        let json = serde_json::to_value(&lib).unwrap();
+        let tiles = json["sets"][0]["tiles"].as_array().unwrap();
+        assert_eq!(tiles[0]["emoji"], "🐕");
+        assert!(tiles[1].get("emoji").is_none(), "no emoji, nothing written");
+        let back: Library = serde_json::from_value(json).unwrap();
+        assert_eq!(lib, back);
+        // A hand-edited library keeps only the emoji.
+        let mut lib: Library = serde_json::from_str(r#"{"sets":[{"tiles":[{"emoji":"🐕 dog"},{"emoji":"dog"}]}]}"#).unwrap();
+        lib.normalize();
+        assert_eq!((lib.sets[0].tiles[0].emoji.as_str(), lib.sets[0].tiles[1].emoji.as_str()), ("🐕", ""));
+    }
+
+    /// Mute (D-251) keeps the volume and plays at zero gain; only a muted tile writes it.
+    #[test]
+    fn muted_round_trips_and_keeps_the_volume() {
+        let mut lib = Library::starter();
+        lib.sets[0].tiles.push(Tile { title: "Quiet".into(), volume: 0.5, muted: true, ..Default::default() });
+        lib.sets[0].tiles.push(Tile { title: "Loud".into(), ..Default::default() });
+        let json = serde_json::to_value(&lib).unwrap();
+        let tiles = json["sets"][0]["tiles"].as_array().unwrap();
+        assert_eq!(tiles[0]["muted"], true);
+        assert!(tiles[1].get("muted").is_none(), "an unmuted tile writes nothing");
+        let back: Library = serde_json::from_value(json).unwrap();
+        assert_eq!(lib, back);
+        let quiet = &back.sets[0].tiles[0];
+        assert_eq!((quiet.volume, quiet.gain()), (0.5, 0.0), "the level is kept, the gain is zero");
+        assert_eq!(Tile { muted: false, ..quiet.clone() }.gain(), 0.5);
+        let old: Tile = serde_json::from_str(r#"{"title":"Old"}"#).unwrap();
+        assert!(!old.muted);
+    }
+
+    /// A bed's own duck level (D-245) is kept; older tiles, and beds left at the default,
+    /// follow the library's amount and write nothing.
+    #[test]
+    fn a_beds_own_duck_level_round_trips_and_old_tiles_follow_the_library() {
+        let mut lib = Library::starter();
+        lib.sets[0].tiles.push(Tile { title: "Bed".into(), duck: Duck::Ducked, duck_db: Some(-18.5), ..Default::default() });
+        lib.sets[0].tiles.push(Tile { title: "Plain bed".into(), duck: Duck::Ducked, ..Default::default() });
+        let json = serde_json::to_value(&lib).unwrap();
+        let tiles = json["sets"][0]["tiles"].as_array().unwrap();
+        assert_eq!(tiles[0]["duck_db"], -18.5);
+        assert!(tiles[1].get("duck_db").is_none(), "the default isn't written");
+        let back: Library = serde_json::from_value(json).unwrap();
+        assert_eq!(lib, back);
+        let old: Tile = serde_json::from_str(r#"{"title":"Bed","duck":"ducked"}"#).unwrap();
+        assert_eq!((old.duck, old.duck_db), (Duck::Ducked, None));
+        // Out of range or not a number: clamped, or back to the library's.
+        let mut lib: Library = serde_json::from_str(r#"{"sets":[{"tiles":[{"duck_db":-90},{"duck_db":6},{"duck_db":null}]}]}"#).unwrap();
+        lib.normalize();
+        let got: Vec<_> = lib.sets[0].tiles.iter().map(|t| t.duck_db).collect();
+        assert_eq!(got, [Some(-40.0), Some(0.0), None]);
     }
 
     #[test]

@@ -1,8 +1,9 @@
-//! The pad options (D-145): Loop, Solo, Pausable, One-shot, Hold and Disabled. Their icons
-//! are our own, drawn with the painter in whatever colour the theme gives (D-146), so they
-//! need no font and look the same in Console and Panel. A pad's face shows the badges for
-//! Loop, Hold, Pausable and One-shot, and one for an end fade-out (D-168); the inspector
-//! has a row of toggle buttons.
+//! The pad options (D-145): Loop, Solo, Pausable, One-shot, Hold and Disabled, and Mute
+//! (D-251). Their icons are our own, drawn with the painter in whatever colour the theme
+//! gives (D-146), so they need no font and look the same in Console and Panel. A pad's
+//! face shows the badges for Mute, Loop, Hold, Pausable and One-shot, and one for an end
+//! fade-out (D-168); the inspector has a row of toggle buttons, and Mute's speaker beside
+//! the volume slider.
 
 use crate::model::Tile;
 use crate::theme::{self, Tokens};
@@ -18,6 +19,8 @@ pub enum PadOption {
     OneShot,
     Hold,
     Disabled,
+    /// Plays at zero gain (the inspector's speaker beside Volume, not the row).
+    Muted,
 }
 
 impl PadOption {
@@ -25,8 +28,9 @@ impl PadOption {
     /// (or, three by three, the sixth: `option_row`).
     pub const ROW: [PadOption; 5] = [PadOption::Loop, PadOption::Solo, PadOption::Pausable, PadOption::OneShot, PadOption::Hold];
 
-    /// The badges a pad's face can show, right to left from its corner.
-    pub const BADGES: [PadOption; 4] = [PadOption::Loop, PadOption::Hold, PadOption::Pausable, PadOption::OneShot];
+    /// The badges a pad's face can show, right to left from its corner: Mute nearest it,
+    /// so a narrow pad keeps it longest.
+    pub const BADGES: [PadOption; 5] = [PadOption::Muted, PadOption::Loop, PadOption::Hold, PadOption::Pausable, PadOption::OneShot];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -36,6 +40,7 @@ impl PadOption {
             PadOption::OneShot => "One-shot",
             PadOption::Hold => "Hold",
             PadOption::Disabled => "Disabled",
+            PadOption::Muted => "Mute",
         }
     }
 
@@ -48,6 +53,7 @@ impl PadOption {
             PadOption::OneShot => "A press while it plays starts it again from the beginning (turns Pausable off)",
             PadOption::Hold => "It plays while the key, pad or mouse button is held, and stops when let go (with Pausable, pauses)",
             PadOption::Disabled => "Keys, pads and GO skip it; Preview still plays it",
+            PadOption::Muted => "Silence it, keeping its volume: it still starts, keeps its time and cues, ducks and solos, but plays at no level",
         }
     }
 
@@ -60,6 +66,7 @@ impl PadOption {
             PadOption::OneShot => "oneShot",
             PadOption::Hold => "hold",
             PadOption::Disabled => "disabled",
+            PadOption::Muted => "muted",
         }
     }
 
@@ -71,6 +78,7 @@ impl PadOption {
             PadOption::OneShot => t.press.one_shot,
             PadOption::Hold => t.press.hold,
             PadOption::Disabled => t.disabled,
+            PadOption::Muted => t.muted,
         }
     }
 
@@ -83,6 +91,7 @@ impl PadOption {
             PadOption::OneShot => t.press.set_one_shot(on),
             PadOption::Hold => t.press.hold = on,
             PadOption::Disabled => t.disabled = on,
+            PadOption::Muted => t.muted = on,
         }
     }
 }
@@ -119,11 +128,14 @@ pub fn fit_badges(t: &Tile, room: f32, pitch: f32) -> Vec<Badge> {
     out
 }
 
-/// How a tile plays, in words, for its hover card and screen readers: "hold, pausable,
-/// loops, solo, fades out". Empty for a plain pad (a press plays, a press while playing
-/// stops).
+/// How a tile plays, in words, for its hover card and screen readers: "muted, hold,
+/// pausable, loops, solo, fades out". Empty for a plain pad (a press plays, a press while
+/// playing stops).
 pub fn option_words(t: &Tile) -> Vec<&'static str> {
     let mut words = Vec::new();
+    if t.muted {
+        words.push("muted");
+    }
     if t.press.hold {
         words.push("hold");
     }
@@ -198,6 +210,36 @@ pub fn paint_icon(p: &Painter, c: Pos2, size: f32, opt: PadOption, color: Color3
             p.circle_stroke(c, r, stroke);
             let d = r * std::f32::consts::FRAC_1_SQRT_2;
             p.line_segment([c + vec2(-d, d), c + vec2(d, -d)], stroke);
+        }
+        PadOption::Muted => paint_speaker(p, c, s, true, color),
+    }
+}
+
+/// A loudspeaker in a `size` square around `c`, facing right: with `muted`, a cross where
+/// its sound would be (the Mute badge and the inspector's toggle); without, two arcs.
+pub fn paint_speaker(p: &Painter, c: Pos2, size: f32, muted: bool, color: Color32) {
+    let s = size;
+    let stroke = Stroke::new((s * 0.11).max(1.4), color);
+    let left = c.x - s * 0.42;
+    // The magnet, then the cone flaring out to the right.
+    p.rect_filled(Rect::from_min_max(pos2(left, c.y - s * 0.13), pos2(left + s * 0.18, c.y + s * 0.13)), 0.0, color);
+    let (neck, mouth) = (left + s * 0.16, left + s * 0.44);
+    p.add(Shape::convex_polygon(
+        vec![pos2(neck, c.y - s * 0.13), pos2(mouth, c.y - s * 0.36), pos2(mouth, c.y + s * 0.36), pos2(neck, c.y + s * 0.13)],
+        color,
+        Stroke::NONE,
+    ));
+    if muted {
+        let (x, d) = (c.x + s * 0.24, s * 0.15);
+        p.line_segment([pos2(x - d, c.y - d), pos2(x + d, c.y + d)], stroke);
+        p.line_segment([pos2(x - d, c.y + d), pos2(x + d, c.y - d)], stroke);
+    } else {
+        for r in [s * 0.18, s * 0.34] {
+            let arc: Vec<Pos2> = (0..=10).map(|i| {
+                let a = (i as f32 / 10.0 - 0.5) * 0.5 * TAU * 0.55;
+                pos2(mouth - s * 0.04 + r * a.cos(), c.y + r * a.sin())
+            }).collect();
+            p.add(Shape::line(arc, stroke));
         }
     }
 }
@@ -280,7 +322,19 @@ pub fn paint_lock(p: &Painter, c: Pos2, size: f32, closed: bool, color: Color32)
     p.line_segment([pos2(c.x + r, top - lift), pos2(c.x + r, if closed { body.top() } else { top - lift + s * 0.06 })], stroke);
 }
 
-/// A pad's badges (from [`badges`] or [`fit_badges`]: Loop, Hold, Pausable, One-shot,
+/// A set open in a window of its own (D-224), in the Setlist: two overlapping window
+/// outlines, the front one with a filled title bar, centred on `c`.
+pub fn paint_window_mark(p: &Painter, c: Pos2, size: f32, color: Color32) {
+    let s = size;
+    let stroke = Stroke::new((s * 0.09).max(1.2), color);
+    let back = Rect::from_min_size(pos2(c.x - s * 0.5, c.y - s * 0.45), vec2(s * 0.7, s * 0.6));
+    let front = back.translate(vec2(s * 0.3, s * 0.3));
+    p.rect_stroke(back, s * 0.06, stroke, StrokeKind::Middle);
+    p.rect_stroke(front, s * 0.06, stroke, StrokeKind::Middle);
+    p.rect_filled(Rect::from_min_size(front.min, vec2(front.width(), s * 0.2)), s * 0.06, color);
+}
+
+/// A pad's badges (from [`badges`] or [`fit_badges`]: Mute, Loop, Hold, Pausable, One-shot,
 /// those that are on, then the fade), drawn leftward from `right_top` in `size` squares.
 /// Returns the width they took.
 pub fn paint_badges(p: &Painter, right_top: Pos2, size: f32, badges: &[Badge], color: Color32) -> f32 {
@@ -384,6 +438,33 @@ fn option_button_sized(ui: &mut Ui, opt: PadOption, on: Option<bool>, size: Vec2
     theme::hint(resp, tip)
 }
 
+/// The speaker beside the inspector's volume slider (D-251): Mute, a square key that turns
+/// the error red with a cross while muted. `on` is `None` when a selection is mixed.
+pub fn mute_toggle(ui: &mut Ui, on: Option<bool>) -> egui::Response {
+    let t = Tokens::get(ui.ctx());
+    let side = theme::TARGET.max(26.0);
+    let (rect, resp) = ui.allocate_exact_size(vec2(side, side), Sense::click());
+    let muted = on == Some(true);
+    let fill = if resp.hovered() { t.key_hover } else { t.key };
+    let p = ui.painter();
+    p.rect_filled(rect, 6.0, fill);
+    if muted || on.is_none() {
+        p.rect_stroke(rect, 6.0, Stroke::new(1.5_f32, if muted { t.error } else { t.accent }), StrokeKind::Inside);
+    }
+    let ink = if muted { t.error } else { theme::ink_on(fill) };
+    paint_speaker(p, rect.center(), side * 0.62, muted, ink);
+    let resp = theme::role(resp, AxRole::Button, PadOption::Muted.label(), on);
+    if on.is_none() {
+        resp.ctx.accesskit_node_builder(resp.id, |n| n.set_toggled(Toggled::Mixed));
+    }
+    let tip = match on {
+        None => format!("{} (some of these are muted, some aren't)", PadOption::Muted.tip()),
+        Some(true) => "Muted: it plays at no level. Click to hear it again at its volume".to_owned(),
+        Some(false) => PadOption::Muted.tip().to_owned(),
+    };
+    theme::hint(resp, tip)
+}
+
 /// The inspector's options: the big toggle buttons in a row, then a smaller Disabled; in
 /// a column too narrow for five (the default width, D-211), three by three with Disabled
 /// as the sixth big button. `state` gives each option's value (`None` when a selection
@@ -435,6 +516,11 @@ mod tests {
         assert_eq!(t.press, PressOptions { hold: true, pausable: false, one_shot: true }, "One-shot turns Pausable off");
         let on: Vec<_> = PadOption::BADGES.into_iter().filter(|o| o.get(&t)).collect();
         assert_eq!(on, [PadOption::Loop, PadOption::Hold, PadOption::OneShot]);
+        PadOption::Muted.set(&mut t, true);
+        assert!(t.muted && t.volume == 1.0, "Mute keeps the volume");
+        assert_eq!(option_words(&t), ["muted", "hold", "one-shot", "loops"]);
+        assert_eq!(badges(&t)[0], Badge::Option(PadOption::Muted), "Mute sits nearest the corner");
+        assert_eq!(fit_badges(&t, 20.0, 17.0), [Badge::Option(PadOption::Muted)], "and is the last to go");
     }
 
     #[test]

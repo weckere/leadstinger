@@ -53,6 +53,7 @@ Tile fields:
 |---|---|
 | `file` | the clip, relative to the pack folder |
 | `title` | the tile's title (default: the file name) |
+| `emoji` | an emoji or a few, drawn before the title on the pad; anything that isn't an emoji is dropped |
 | `hotkey` | a key on the keyboard's four rows, `1`–`=`, `q`–`]`, `a`–`'`, `z`–`/`, or one with Option/Alt as `alt+1` (`""` for none). A key given here is set by hand and stays with the tile; left out, the tile takes its slot's key, which follows its row (row 1: `1`–`=`, row 2: `q`–`]`, …, rows 5–8: the same with `alt+`) |
 | `color` | `red`, `orange`, `yellow`, `lime`, `green`, `mint`, `teal`, `cyan`, `blue`, `indigo`, `purple`, `pink`, `rose`, `crimson`, `brown` or `gray` |
 | `hold`, `pausable`, `one_shot` | `true` turns on that pad option: Hold plays while held; Pausable makes a second press pause it; One-shot makes a second press start it again (Pausable and One-shot exclude each other) |
@@ -63,6 +64,7 @@ Tile fields:
 | `pre_wait` | seconds between triggering the tile and its start |
 | `link`, `post_wait` | `continue` (the next cue starts `post_wait` seconds after this one starts) or `follow` (… after it ends); left out, the next cue waits for GO |
 | `volume` | 0–1 |
+| `muted` | `true`: it plays at zero gain on every send, keeping its volume, timing, ducking and Solo |
 | `output` | an output's name; used only if the library has an output of that name |
 | `channels` | a multichannel file's channel mix: `[{"to": "left", "gain_db": 0}, …]`, one per source channel in file order (`to` is `left`, `right`, `both` or `mute`); absent is the automatic stereo downmix |
 | `sends` | `[{"output": "Main", "gain_db": 0}, {"output": "Stream", "gain_db": -6}]`: every output the tile plays on, each at its own level; wins over `output`; sends to outputs the library lacks are dropped |
@@ -71,6 +73,7 @@ Tile fields:
 | `fade_curve` | `linear`, `equal_power`, `exponential` or `s_curve` (default `gentle`) |
 | `gain_db` | extra gain in dB, −24 to +24 |
 | `duck` | `ducks` (beds dip while it plays) or `ducked` (a bed) |
+| `duck_db` | a bed's own duck level, dB below its level (−40 to 0); left out, it follows the library's duck amount |
 | `solo` | `true`: starting this tile fades out every other one |
 | `trim_start`, `trim_end` | seconds into the file (`trim_end` left out: to the end) |
 | `vamp` | `[start, end]` seconds into the file: loops until the next press (or GO) lets it play on |

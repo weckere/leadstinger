@@ -1158,10 +1158,18 @@ pub fn text_field(ui: &mut Ui, edit: egui::TextEdit<'_>) -> Response {
 /// has none). The accessibility test (src/app/a11y_tests.rs) checks every control went
 /// through one of these.
 pub fn hint(resp: Response, text: impl Into<String>) -> Response {
-    let text = text.into();
+    let text = platform_keys(&text.into());
     record_hint(&resp, true);
     level(&resp);
     resp.on_hover_text(text)
+}
+
+/// The command key by the platform's name: "⌘/Ctrl" in a hint (written once for both
+/// platforms) reads "⌘" on macOS and "Ctrl" elsewhere. Every hover text goes through it;
+/// the CLI docs keep the double form, since they serve both.
+pub fn platform_keys(text: &str) -> String {
+    let mac = cfg!(target_os = "macos");
+    text.replace("⌘/Ctrl", if mac { "⌘" } else { "Ctrl" }).replace("Option/Alt", if mac { "Option" } else { "Alt" })
 }
 
 /// [`hint`] with the control's keys: "what it does — keys".
@@ -1172,7 +1180,8 @@ pub fn hint_keys(resp: Response, what: &str, keys: &str) -> Response {
 /// [`hint`] for a control that can be disabled: `why` says what makes it available, and
 /// shows under `text` while it isn't.
 pub fn hint_or(resp: Response, text: impl Into<String>, why: &str) -> Response {
-    let text = text.into();
+    let text = platform_keys(&text.into());
+    let why = platform_keys(why);
     record_hint(&resp, !why.is_empty());
     level(&resp);
     if resp.enabled() {
@@ -1272,6 +1281,20 @@ pub fn own_focus_cue(ctx: &egui::Context, id: egui::Id) {
 }
 
 /// What the focus ring went round in the last pass, for tests.
+#[cfg(test)]
+mod platform_keys_tests {
+    #[test]
+    fn hover_text_names_this_platforms_command_key() {
+        let s = super::platform_keys("Undo — ⌘/Ctrl+Z; ⌘/Ctrl-click adds, Option/Alt-click removes");
+        assert!(!s.contains("⌘/Ctrl") && !s.contains("Option/Alt"), "{s}");
+        if cfg!(target_os = "macos") {
+            assert_eq!(s, "Undo — ⌘+Z; ⌘-click adds, Option-click removes");
+        } else {
+            assert_eq!(s, "Undo — Ctrl+Z; Ctrl-click adds, Alt-click removes");
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn focus_ring_drawn(ctx: &egui::Context) -> Option<egui::Id> {
     ctx.data(|d| d.get_temp::<Option<egui::Id>>(egui::Id::unique("leadstinger-focus-ring-drawn"))).flatten()

@@ -2,7 +2,9 @@
 //! short sound cue). The binaries are `leadstinger` and `leadstinger-cli`.
 
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+#[cfg(not(target_os = "ios"))]
+use std::path::Path;
 
 /// Shown in the window title, the logo, the macOS menu bar and About.
 pub const APP_NAME: &str = "LeadStinger";
@@ -65,6 +67,15 @@ pub fn data_dir() -> PathBuf {
     if let Some(dir) = env("DATA_DIR") {
         return PathBuf::from(dir);
     }
+    #[cfg(target_os = "ios")]
+    return crate::ios::library_dir();
+    #[cfg(not(target_os = "ios"))]
+    desktop_data_dir()
+}
+
+/// [`data_dir`] on macOS and Linux.
+#[cfg(not(target_os = "ios"))]
+fn desktop_data_dir() -> PathBuf {
     let dir_for = |name: &str| directories::ProjectDirs::from("", "", name).map(|d| d.data_dir().to_path_buf());
     let Some(dir) = dir_for(FILE_NAME) else {
         return std::env::temp_dir().join(SLUG);
@@ -81,6 +92,7 @@ pub fn data_dir() -> PathBuf {
 }
 
 /// Move `legacy` to `new` if only the legacy folder exists. Returns whether it moved.
+#[cfg(not(target_os = "ios"))]
 fn migrate(legacy: &Path, new: &Path) -> std::io::Result<bool> {
     if new.exists() || !legacy.join("Library.json").exists() {
         return Ok(false);

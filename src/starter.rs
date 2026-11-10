@@ -22,7 +22,7 @@ use uuid::Uuid;
 
 use crate::decode::AUDIO_EXTENSIONS;
 use crate::logic::{guess_hand_set, set_hotkey, PadKey};
-use crate::model::{tidy_channel_mix, tidy_sends, ChannelRoute, TileSend};
+use crate::model::{clamp_duck_db, tidy_channel_mix, tidy_sends, ChannelRoute, TileSend};
 use crate::model::{Appearance, Duck, FadeCurve, Marker, ImageFit, ImageLayer, Layout, PlayMode, PressOptions, SoundSet, ThemeKind, TileColor, GAIN_DB_MAX};
 use crate::store::Store;
 
@@ -95,6 +95,9 @@ pub(crate) struct PackTile {
     pub file: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// The emoji beside the title (D-253); only emoji are kept.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub emoji: String,
     /// `None`: the app picks a free key; `Some("")`: no hotkey.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hotkey: Option<String>,
@@ -115,6 +118,9 @@ pub(crate) struct PackTile {
     pub looping: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub volume: Option<f32>,
+    /// Muted: plays at zero gain, keeping `volume` (D-251).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub muted: bool,
     /// The output it plays on, by name (default Main). Imported only if the library has
     /// an output of that name. Set files write it beside `sends` for older builds.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -131,6 +137,9 @@ pub(crate) struct PackTile {
     /// `ducks` or `ducked`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duck: Option<String>,
+    /// A bed's own duck level, dB (−40 to 0); missing follows the library's amount.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duck_db: Option<f32>,
     #[serde(skip_serializing_if = "is_zero")]
     pub fade_in: f32,
     #[serde(skip_serializing_if = "is_zero")]
@@ -461,6 +470,7 @@ pub(crate) fn import_set(store: &mut Store, dir: &Path, gs: &PackSet, what: &str
         if let Some(title) = gt.title.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             t.title = title.to_owned();
         }
+        t.emoji = crate::model::emoji_only(&gt.emoji);
         let whose = format!("tile “{}”", t.title);
         if let Some(c) = named::<TileColor>(&gt.color, "colour", &whose) {
             t.color = c;
@@ -472,8 +482,10 @@ pub(crate) fn import_set(store: &mut Store, dir: &Path, gs: &PackSet, what: &str
         if let Some(d) = named::<Duck>(&gt.duck, "ducking", &whose) {
             t.duck = d;
         }
+        t.duck_db = gt.duck_db.filter(|v| v.is_finite()).map(clamp_duck_db);
         t.looping = gt.looping;
         t.volume = gt.volume.unwrap_or(1.0).clamp(0.0, 1.0);
+        t.muted = gt.muted;
         let sends = if gt.sends.is_empty() { gt.output.iter().map(TileSend::to).collect() } else { gt.sends.clone() };
         let known = |s: &TileSend| s.is_main() || store.library.outputs.iter().any(|d| d.name == s.output);
         t.sends = sends.into_iter().filter(known).collect();

@@ -76,6 +76,10 @@ Originally made as a gift for Chris Fisher.
   LeadStinger asks before adding it). Starter packs hand someone a
   ready-made board that fills their library on first launch. See
   [starter/README.md](starter/README.md).
+- **Import from Farrago**: File ▸ Import Set… also takes a set exported from Farrago
+  (`.farragoset`, or the same zipped), with its sounds, titles, colours, layout and tile
+  options, and lists what didn't carry over. See
+  [docs/FARRAGO-IMPORT.md](docs/FARRAGO-IMPORT.md).
 
 ## Install
 
@@ -142,6 +146,21 @@ To make a Linux AppImage in `dist/` (needs Nix):
 
 ```bash
 scripts/build-appimage.sh
+```
+
+To build for iPadOS (a first version, simulator-first; see [docs/IPAD-PLAN.md](docs/IPAD-PLAN.md)),
+on a Mac with Xcode and a rustup toolchain (the nix shell has no iOS standard library):
+
+```bash
+rustup target add aarch64-apple-ios-sim aarch64-apple-ios
+scripts/ios-build.sh --run        # build, install and launch in the iPad Pro 13-inch simulator
+```
+
+To run it on your own iPad (a development-signed build, installed with `devicectl`; needs
+`nix` for xcodegen, the iPad paired with Developer Mode on, and your team id):
+
+```bash
+LEADSTINGER_TEAM=XXXXXXXXXX scripts/ios-install.sh
 ```
 
 To try it with a generated demo library, without touching your own:
@@ -484,7 +503,7 @@ figcraft-cli render docs/design/panel.figcraft -o docs/design/panel.png --scale 
 ```bash
 nix develop -c cargo test        # unit and end-to-end tests
 nix develop -c cargo clippy
-scripts/linux-check.sh           # on a Linux host with Nix: tests, nix build, a headless screenshot
+scripts/linux-check.sh           # on a Linux host with Nix: tests, a release build, a headless screenshot (LINUX_CHECK_FULL=1: nix build too)
 ```
 
 Run the app with `LEADSTINGER_SNAPSHOT=out.png` (and optionally `LEADSTINGER_SCRIPT` and
@@ -497,7 +516,8 @@ work. Set it for every run that isn't for you to look at, and launch a bundle wi
 the front). On Linux the window manager decides focus.
 `LEADSTINGER_WINDOW_SIZE=940x800` opens the window at that size, for checking tiled
 widths down to the 720 px minimum. `LEADSTINGER_IN_WINDOW_MENU=1` shows the Linux-style
-menu bar on macOS. Use a scratch `LEADSTINGER_DATA_DIR` for all of these, never your
+menu bar on macOS. `LEADSTINGER_LIGHTS_SHOWN=1` keeps the macOS traffic lights' pill
+showing in Panel, as if the pointer were in the corner. Use a scratch `LEADSTINGER_DATA_DIR` for all of these, never your
 own library.
 
 [AGENTS.md](AGENTS.md) has the rules for contributors, human or agent, including the

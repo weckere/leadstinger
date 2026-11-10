@@ -85,6 +85,20 @@ every edit is non-destructive and can be undone by changing the setting back.
 
   Choose a picture in the inspector, or drop an image file (PNG, JPEG, GIF, WebP, BMP)
   onto a tile. It is copied into the library like audio.
+- **Emoji** (D-253): a tile can carry an emoji or a few ("🌲🦜"), drawn before its title on
+  the pad in both themes, in the title's colour and size: one colour, by the emoji face
+  the app bundles (there is no colour emoji font), so an emoji joined from several (a
+  service dog) may draw as its parts, and one newer than that face (a parrot, a safety
+  vest, a skin tone) is left off the pad rather than drawn as a box; it stays in the
+  tile. A pad with too little room for its title (under
+  64 pt) leaves the emoji off rather than squeeze the title. The inspector's Emoji field,
+  before the title, takes pasted emoji or the system's emoji picker and keeps only emoji
+  (letters, digits and spaces are dropped), at most 24 characters; empty is none.
+  `tile.set --emoji 🐕` sets it (emoji only, or the command fails; `""` or null clears
+  it), `tile.get`/`tile.list` answer `emoji`, one undo step. Saved in the library, set
+  files and packs. The emoji is not part of the pad's spoken name or its hover card: a
+  screen reader would read its long Unicode name ("dog face") before the title. The cue
+  list shows the title alone.
 - **Embedded cover art**: when a tile's audio file carries cover art (ID3 APIC in MP3,
   `covr` in M4A/AAC, PICTURE blocks in FLAC), a tile without a picture of its own gets
   that art as a 35 % underlay. The front cover is preferred. This happens once per tile:
@@ -207,6 +221,19 @@ release do:
 
 Pressing a tile that is in the middle of a stop fade starts it again from the top.
 
+**Mute** (D-251) is one more option, kept apart from the press options: a muted tile
+plays at zero gain on every send and keeps everything else. It still starts and stops,
+runs its time, pre-wait and post-wait, links the next cue, ducks beds (a muted "Ducks
+beds" tile still dips them; a muted bed still dips, silently) and, with Solo, fades the
+others out. Its meter reads silent. Its volume is kept, so unmuting brings it back at its
+level, live if it is playing (over the usual short ramp). Mute is the speaker beside the
+inspector's volume slider, which turns red with a cross while muted; the tile menu's
+**Mute** / **Unmute**; `tile.set --muted true|false` (`tile.get` and `tile.list` answer
+`muted`), one undo step. The pad shows the same muted speaker as a badge, nearest the
+corner so a narrow pad keeps it longest, in both themes; its hover text and screen-reader
+name say "muted". Exporting audio renders a muted tile as if it weren't muted. Saved in
+the library, set files and packs (`muted`).
+
 **No stop clicks** (D-205). Every stop fades over at least 0.1 s (a raised cosine), so
 cutting a waveform mid-cycle can't click or pop: a tile with no stop fade, Solo, Stop All
 with no Stop All fade, Stop All's second press and Shift+Esc all take 0.1 s; a longer
@@ -258,7 +285,14 @@ over from wherever that fade is; a slower one leaves it alone.
 A tile can **duck beds** (a voice drop or stinger) or be a **bed** (music under talk).
 While any tile that ducks is sounding, every bed dips by the duck amount (−12 dB by
 default) over the attack time (0.05 s) and comes back over the release time (0.4 s);
-Settings changes all three. **Duck Beds** (the talk-over, in the Playback menu, or
+Settings changes all three. A bed can have a duck level of its own (D-245): the
+inspector's Play tab shows **Duck to** under Ducking for a bed (−40 to 0 dB; "default"
+beside it while it follows the duck amount, a Default button once it has its own;
+`tile.set --duckLevel -20`, or `default`). The library's duck amount is the default every
+bed without a level follows, and changing it moves only those. Every bed dips and comes
+back together on the one attack and release, each as far as its own level says (one
+shared envelope, 0 to 1, scales each bed's dip in gain). The attack and release stay
+library-wide. **Duck Beds** (the talk-over, in the Playback menu, or
 `duck.hold on`/`off` from a key bind) holds the beds down for as long as it is on.
 
 **Duck beds while I talk** (Settings, or `duck.voice`) listens to a microphone or other
@@ -379,6 +413,22 @@ pulls the board down while it's there (D-127).
       set in the sidebar move to that set's end, outlined while they're over it. Not
       into or out of a locked set. `tile.move` with `tiles` and `set` does both from
       the CLI.
+    - **Alt-drag copies** (D-229; Option on macOS, Alt on Linux), as Finder's
+      Option-drag: with Alt held at the drop, the dragged tile (or the selection
+      dragged with it) stays where it is and **copies** go in at the target instead:
+      into a gap, a blank slot, an empty slot past a row's end or a phantom row, as
+      files would (the board as it is, nothing closing up), or onto a set in the
+      sidebar, at its end (its own set too). While Alt is held the dragged tile shows a
+      green "+" badge on its corner and the ghost slots are outlined in green; pressing
+      or letting go of Alt during the drag switches between moving and copying until
+      the drop. The copies are full duplicates (settings, colour, picture, pad options,
+      sends) with new ids; a hand-set key stays only on a copy that lands in another
+      set where no tile has that key, otherwise the copy takes its slot's key, as
+      Duplicate does (D-230). The originals stay selected. The drop is one undo step;
+      nothing is copied into or out of a locked set. `tile.copy` (`tile` or `tiles`,
+      the placement parameters `tile.move` takes, and `set`) does it from the CLI. On
+      Linux a compositor that binds Alt-drag to moving windows takes the drag first;
+      Hyprland's default modifier is Super, so there Alt-drag reaches the app.
     - **Files** from a file manager (and native Wayland drops, D-108) go in the same
       way (not into a locked set): into a gap, a blank slot or a phantom row, with the same
       preview; several files open that many ghost slots. A sound dropped on a tile is a
@@ -486,7 +536,7 @@ pulls the board down while it's there (D-127).
 - **No modes** (M22, D-147): clicking a tile selects it for the inspector, and a
   **double-click plays it**, as a press of its key would: the second press is the press,
   so a Hold tile plays while that second press is held and stops when it's let go.
-  Dragging moves tiles (unless the set is locked). Keys, Enter on a focused
+  Dragging moves tiles, Alt-dragging copies them (unless the set is locked). Keys, Enter on a focused
   tile, MIDI pads, OSC, GO, Stream Deck and the CLI play tiles exactly as before.
   Right-click opens a tile's menu: Edit… (opens it in the waveform editor, read-only in a
   locked set; greyed out for an action tile or one with no sound), Play or Stop, and
@@ -514,6 +564,60 @@ pulls the board down while it's there (D-127).
   and shows its whole text on hover, and a notice stays up while the pointer is on it.
   While a notice shows and would get less than 240 px, Console's output name gives way
   for as long as the notice is up.
+- **Set windows** (D-222 to D-226): a set can open in a window of its own (View ▸ Open
+  Set in New Window for the current set, Open in New Window in a set's right-click menu
+  in the setlist, `window.open`), a real window of the desktop that can sit on another
+  monitor or workspace while the main window shows another set. It is titled "‹set› ·
+  LeadStinger", with the app's id and icon, is at least 360 × 240, takes dropped files,
+  and shows that set's board (its pads, or its cue list with the list bar) in the
+  current theme and zoom, under a slim bar: the set's name, its lock, how many of its
+  tiles are playing, Grid | Cue List, the transport keys (Fade All, Pause All, and in a
+  cue list Previous and Next) when there's room, and Stop All. Its pads work as in the
+  main window: a click selects (the main window's inspector shows the selection), a
+  double-click plays, dragging moves pads, and files dropped on it land in its set. Keys
+  typed in it act on its set: tile keys play its pads, Enter and the arrows run its cue
+  list, Esc, Shift+Esc and Space work as everywhere. The menus, the Setlist, the
+  Inspector, Settings and the other windows stay in the main window; menu commands,
+  MIDI, OSC, global keys and the CLI act on the main window's current set as before, and
+  one audio engine plays for every window. A set with a window of its own has a window
+  mark beside its name in the setlist (its hover text and screen-reader label say "open
+  in a window of its own"), and View ▸ Open Set in New Window is checked while the
+  current set has one (choosing it then raises the window). A set can have one window;
+  the same set can also be the main window's. Closing a set window just closes it;
+  closing the main window quits, and the set windows open again, where they were, at
+  the next launch. View ▸ Gather Windows (`window.gather`) brings every set window back
+  beside the main one, say after a monitor has gone. `window.close`, `window.list`,
+  `window.focus` and `window.move` close, list, raise and place them. On Wayland the
+  compositor places windows and keeps their positions to itself, so only a window's
+  size is remembered and `x`/`y` are ignored; a compositor's window rules can match the
+  title to put it on a workspace or monitor. Deleting a set closes its window.
+- **macOS title bar** (t-m22-mac-titlebar, D-228): on macOS the main window and set
+  windows have no title-bar row. The window's content runs to its top edge under a
+  transparent title bar with the title hidden, and the traffic lights float over the
+  window's own top strip: Console's toolbar (the wordmark moves right to clear them), the
+  in-window menu bar when `LEADSTINGER_IN_WINDOW_MENU` shows it, and a set window's slim
+  bar, whose set name, right of the lights, stands in for the hidden title (Mission
+  Control, the Window menu and screen readers still get the full title). The room is
+  measured from the lights themselves and kept at every zoom and down to the smallest
+  window; Panel's top frame is its strip too. In Console (and a Console set window) the
+  lights are centred on that strip, at the left edges macOS gives them, put back
+  whenever the window resizes, zooms or comes back from full screen
+  (t-m22-titlebar-lights, D-231). In Panel they are hidden, so the
+  frame shows whole, and appear only while the pointer is in the window's top-left
+  corner (from the corner to 14 pt past the pill), in a black pill of their own with
+  8 pt round them: on the main window nested in the top elbow's curve with a little
+  orange all round, on a set window in the bar's corner (D-232). Hidden lights take no
+  clicks; Close, Minimize and Zoom stay in the Window menu and on their keys. Switching
+  theme moves them at once. `LEADSTINGER_LIGHTS_SHOWN=1` keeps Panel's pill showing, for
+  screenshots. Dragging
+  the strip's empty parts moves the window, and double-clicking them does what System
+  Settings ▸ Desktop & Dock says a title-bar double-click does (zoom by default, or
+  minimize, or nothing); its buttons and menus work as before. In full screen the lights
+  leave with the title bar, so the strip takes back their room, and the system title bar
+  slides down over the top while the pointer is there, as in any app. Settings and the
+  other dialogs are panels inside the main window, so they have no title bar of their
+  own. Linux keeps the window the desktop gives it (its own title bar, or none on
+  Hyprland).
 - **Set lock** (M22, D-149): a set can be **locked** (File ▸ Lock Set, the lock in its
   settings, a right-click on the set in the sidebar ▸ Lock Set / Unlock Set in either
   theme, `set.lock` / `set.unlock`), and then nothing in it changes: no tile settings,
@@ -535,17 +639,21 @@ pulls the board down while it's there (D-127).
   Before M22, Lock Edit Mode guarded the whole app: a library with it on opens with
   every set locked.
 - **Selecting several tiles**: Cmd/Ctrl-click adds a tile to the selection or takes it
-  out. Shift-click selects the **rectangle** between the tile in the inspector and the
+  out. Alt-click (Option on macOS) takes a selected tile out and leaves the rest
+  selected; on a tile that isn't selected it changes nothing (D-229); it never plays.
+  Shift-click selects the **rectangle** between the tile in the inspector and the
   clicked one, in its set (D-169, D-177): every slot in the rows between them and in the
   columns between them, skipping blank slots and the slots a shorter row doesn't reach.
   The tile in the inspector stays the corner, so another Shift-click makes a new
   rectangle from it. Cmd/Ctrl-Shift-click adds the rectangle to the selection (its
-  corner is the tile last Cmd/Ctrl-clicked). Neither plays anything. In Auto and Fixed
+  corner is the tile last Cmd/Ctrl-clicked). Neither plays anything. `view.select
+  --remove` is Alt-click from the CLI. In Auto and Fixed
   columns the rectangle follows the columns shown; in the cue list (one column) and
   among search hits it's the run in set order. `view.select --range` (with `--add`,
   and `--columns` for lines of that many) does it from the CLI. With several selected, the
   inspector shows the settings they can share (colour, the pad options,
-  volume, gain, speed, fades, fade shape, ducking), a dash where they differ, and a
+  volume, gain, speed, fades, fade shape, ducking, and a bed's Duck to when every
+  selected tile is a bed), a dash where they differ, and a
   change applies to all of them as one undo step (`tile.set --tiles`). If one tile
   refuses a change, none of them takes it.
 - **Inspector** (D-144, M22): a column on the right that edits every property of the
@@ -554,7 +662,8 @@ pulls the board down while it's there (D-127).
   the width isn't kept from one launch to the next. Every row fits the column: sliders,
   menus and fields take the room there is, and what doesn't fit beside a field goes on a
   row under it, so nothing is cut off and the column never widens itself. Top to bottom:
-  - the tile's **name** with its key beside it; **Picture…** (a pop-up that previews the
+  - the tile's **Emoji** (a small field, D-253) and **name**, with its key beside them;
+    **Picture…** (a pop-up that previews the
     picture and edits its layer, fit and opacity) and the **colour**, one swatch that
     opens the palette;
   - the **hero**: the sound's waveform in the tile's colour, with the trim shaded off,
@@ -570,9 +679,10 @@ pulls the board down while it's there (D-127).
     each, their names shrinking a little) one row, with a smaller Disabled under it; with several
     tiles selected, an option some of them have is outlined and reads "mixed", and a
     click turns it on for all;
-  - the **volume**;
+  - the **volume**, with **Mute** (a speaker toggle, D-251) between its label and the
+    slider; with several tiles selected, mixed like an option;
   - **tabs** (a segmented control, `view.inspector --tab`): **Play** (fades, the stop
-    fade, the fade shape, ducking), **Sound** (gain and Normalise, speed, pitch, outputs
+    fade, the fade shape, ducking, and a bed's Duck to level), **Sound** (gain and Normalise, speed, pitch, outputs
     and sends, the exact trim, a multichannel file's channels), **Cue** (notes, the
     pre-wait, what starts the next cue, the vamp, markers and Play On, with what the vamp is
     doing: "Vamping: the next press plays on", "Playing on to the end") and **Control**
@@ -1205,7 +1315,8 @@ On a Wayland desktop with XWayland, Settings ▸ Window system chooses native Wa
 (the default) or X11 through XWayland. It applies at the next launch.
 `LEADSTINGER_X11=1` or `0` overrides the setting. File drops and pasted files work on
 both: on native Wayland the app accepts `text/uri-list` drags itself (D-108), with the
-same drop highlight and drop-position rules as on X11 and macOS.
+same drop highlight and drop-position rules as on X11 and macOS. On native Wayland only the main window
+takes those drops; a set window doesn't (D-227).
 
 ## App icon
 
@@ -1267,6 +1378,10 @@ part (`v0.4.0-rc.1`) are never offered.
   stopped, and the stored Stop All fade becomes none (every library held the old 1 s
   default, so a chosen one can't be told apart). Set files and starter packs without a
   `stop_fade` give a tile its `fade_out` as the stop fade too.
+- Which sets are open in windows of their own, and each window's place and inside size
+  (in the desktop's points, so they don't change with the zoom; no place on Wayland),
+  are kept in the library and reopened at launch (D-225). The main window's place isn't
+  kept.
 - Data directory:
   - macOS: `~/Library/Application Support/LeadStinger`
   - Linux: `~/.local/share/leadstinger`
@@ -1328,6 +1443,80 @@ name and folder; Import (focused, so Enter) imports it as above, Cancel or Esc d
 nothing. Opening the same file again before answering asks once. `set.import` with `ask`
 needs the window.
 
+## Importing from Farrago
+
+File ▸ Import Set… (its file picker lists "Farrago set" beside set files), `set.import`,
+and dropping one on the window also take a Farrago export (`.farragoset`, D-240..D-243):
+the folder (a package on macOS), or that folder zipped, which is what Finder makes of it
+to send it on, and what reaches a Linux machine. The format, in our own words, is in
+[docs/FARRAGO-IMPORT.md](docs/FARRAGO-IMPORT.md). It becomes one new set, added after the
+library's own as a set file's are, in one undo step. Each sound is copied (or converted)
+into the library as any import is.
+
+- **Name**: the export's file name less `.farragoset` (and `.zip`); Farrago's own set
+  title only when that is empty, since it is often the default "Sound Set". A taken name
+  gets a number.
+- **Layout**: Farrago's grid mode gives a grid set, its list mode a list set. Grid tiles
+  keep their places: the columns are the widest row, each row has its tiles in column
+  order, and a gap (an empty place, or a tile that was skipped) is a blank slot. A grid
+  whose places overlap, or that is wider than 12, comes in in list order instead. A list
+  set's tiles are in list order; its playback mode Continuous turns Continuous on (else
+  Queued), with its cross-fade.
+- **Titles**: the tile's title; else the sound's Title tag from its metadata; else the
+  file name, unless that is only an id; else "Sound N".
+- **Keys**: the export has none. Farrago's keys follow the rows (1–6, Q–Y, A–H, …), as
+  LeadStinger's automatic keys do, so the tiles take their slots' keys.
+- **Notes**: the set's and each tile's notes.
+
+Tile settings:
+
+| Farrago | LeadStinger |
+|---|---|
+| title | title |
+| tileIcon | Emoji: the strings that are emoji, joined in order ("🌲🦜"); an entry that isn't an emoji is left out and reported |
+| colorIndex | colour, by the table below |
+| holdToPlay | Hold |
+| playbackEnabled off | Disabled |
+| defaultToPause | Pausable |
+| loop | Loop |
+| solo | Solo |
+| muted | Mute (at its volume) |
+| fullVolume | volume (above 1, the rest as gain dB) |
+| fadeInTime, fadeOutTime | fade in, fade out (and the stop fade) |
+| startPackets, endPackets | trim start, trim end (packets × duration ÷ packetCount; endPackets counts back from the end) |
+| ducked | Bed (gets ducked); the set's other tiles then Duck beds, since in Farrago any other tile dips a ducked one |
+| duckedVolume | the bed's own Duck to level: the linear factor as dB, 20·log10(v) to 0.1 dB (0.4, also when missing, is −8.0 dB; 0 or below 0.01 is −40 dB; above 1 is 0 dB) |
+| notes | notes |
+| channels | Output: a left/right pair n and n + 1 (0 is Auto; channels count from 1) plays on the output whose first channel is n, Main for 1/2, else the library's first output on n (D-254); anything else (no such output, mono, not adjacent, Auto on one side) plays on Main and is reported as "channels 3/4: no matching output". The export doesn't name the device, so only the channel numbers are matched |
+
+Colours, by nearest hue (D-243; all eight checked in Farrago 2.2, D-250):
+
+| colorIndex | Farrago | LeadStinger |
+|---|---|---|
+| 0 | purple (the default) | Purple |
+| 1 | magenta | Pink |
+| 2 | red | Red |
+| 3 | orange | Orange |
+| 4 | yellow | Yellow |
+| 5 | green | Green |
+| 6 | teal | Teal |
+| 7 | blue | Blue |
+
+Farrago has no other colours. Any other index keeps the automatic colour, with a warning.
+
+Not carried over, and listed in the result when a tile had them: favourite, a tile icon
+that isn't an emoji, automations, the play count and last-played time, and a channel
+choice no output matches (it plays on Main). Never read: the waveform and file hash in the metadata, window and editor
+state, the grid's and list's visible row counts. Keys this reader doesn't know are listed
+as warnings and left out.
+
+A tile whose sound is missing from the export, or can't be read, is skipped, not fatal.
+The result says what happened: `set.import` answers with `farrago: {imported: [title],
+skipped: [{title, reason}], dropped: ["favourite (2 tiles)", …], warnings}` beside `sets`,
+and the window's notice reads "Imported “Show” (15 sounds) from Farrago; skipped “Boom”
+(its sound file isn't in the export); not carried over: favourite (2 tiles)". An export
+with nothing playable fails with the first reason.
+
 ## Exporting audio
 
 A tile can be written to an audio file with every adjustment applied: File ▸ Export
@@ -1365,4 +1554,33 @@ icon, the menu bar stays with the app in front) and its window is fully transpar
 ignores the mouse; a separate Space can't be chosen with public APIs. The window keeps
 painting while covered, so snapshots and `view.screenshot` show the current state, and
 the control socket works as usual. A request to raise the window un-minimises it
-without taking the focus. On Linux the window manager decides focus.
+without taking the focus. A set window (D-226) opens hidden, is made transparent and
+click-through the same way, and only then is shown. A snapshot run also saves each open
+set window beside the main shot, as `NAME-window-1.png` and on in the order they were
+opened, and `view.screenshot {window}` captures one set's window. On Linux the window manager decides focus.
+
+## iPadOS
+
+The iPad build (docs/IPAD-PLAN.md; first version, built for the simulator) is the same app
+with these differences.
+
+- **One window.** The window is the whole screen (or the Split View / Stage Manager
+  window the system gives it), laid out inside the safe area: nothing sits under the
+  status bar or the home indicator. All four orientations work. There are no set windows,
+  and the title bar, `Open in New Window` and the macOS menu bar do not exist; the menu
+  strip is drawn inside the window as on Linux.
+- **Touch plays.** A finger put down on a pad plays it, as a press of its key would, and
+  lifting it releases it, so a Hold pad plays while the finger is held. Each further
+  finger on another pad plays that one too. Tapping a pad also selects it for the
+  Inspector. A long press opens the pad's menu (the right-click menu).
+- **Files.** The library is `Documents/LeadStinger` in the app's container, which the Files
+  app shows (`UIFileSharingEnabled`). Add Sounds, Import Set and Import Theme open the
+  system's Files picker and import a copy. Exports (`Export Set`, `Export Audio`, theme
+  export) are written to `Documents/Exports` instead of asking for a place.
+- **Audio.** Playback category with MixWithOthers, so a soundboard runs next to a music
+  app or a call; it keeps playing with the silent switch on and in the background
+  (`audio` background mode).
+- **Not available:** system-wide keys, the control socket and `leadstinger-cli` (nothing
+  outside the app's sandbox can reach it; OSC works over the network), set windows,
+  ffmpeg-based decoding (AC-3, DTS, video audio: symphonia only), opening a set file
+  from another app (Open In, planned).

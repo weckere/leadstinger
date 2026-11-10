@@ -615,6 +615,14 @@ impl Store {
         }
     }
 
+    /// Save soon, without counting it as a change to the sets (no new revision, so
+    /// nothing re-reads the library): a window moved (D-225).
+    pub fn mark_unsaved(&mut self) {
+        if self.dirty_since.is_none() {
+            self.dirty_since = Some(Instant::now());
+        }
+    }
+
     /// Save if a change is older than the debounce delay.
     pub fn save_if_due(&mut self) -> Result<()> {
         match self.dirty_since {

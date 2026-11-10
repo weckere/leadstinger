@@ -81,6 +81,8 @@ struct Voice {
     stop_fade: f32,
     curve: FadeCurve,
     duck: Duck,
+    /// A bed's own duck level, linear; `None` follows the mixer's (the library's).
+    duck_level: Option<f32>,
     speed: f64,
     gain: f32,
     state: VoiceState,
@@ -213,10 +215,12 @@ pub struct Mixer {
     sounded: usize,
 }
 
-/// The duck envelope: one gain, shared by every ducked voice, that falls toward
-/// `level` while something ducks and climbs back to 1 when nothing does.
+/// The duck envelope: one depth, shared by every ducked voice, that climbs toward 1 while
+/// something ducks and falls back to 0 when nothing does. A bed at depth `d` plays at
+/// `1 − d·(1 − level)`, its own level or the library's, so every bed dips and comes back
+/// together, each as far as its level says.
 struct Ducker {
-    /// Linear gain at full duck.
+    /// Linear gain at full duck, for beds without a level of their own.
     level: f32,
     attack: f32,
     release: f32,
@@ -227,8 +231,9 @@ struct Ducker {
     hold: bool,
     /// Whether anything ducked in the last block.
     active: bool,
-    gain: f32,
-    /// The envelope for the block being rendered, one gain per frame.
+    /// 0 (not ducked) to 1 (fully down).
+    depth: f32,
+    /// The envelope for the block being rendered, one depth per frame.
     env: Vec<f32>,
 }
 
@@ -242,12 +247,12 @@ impl Ducker {
     /// Fill `env` for `frames` frames.
     fn block(&mut self, frames: usize, active: bool) {
         self.active = active;
-        let target = if active { self.level } else { 1.0 };
+        let target = if active { 1.0 } else { 0.0 };
         self.env.clear();
         for _ in 0..frames {
-            let c = if target < self.gain { self.attack } else { self.release };
-            self.gain += (target - self.gain) * c;
-            self.env.push(self.gain);
+            let c = if target > self.depth { self.attack } else { self.release };
+            self.depth += (target - self.depth) * c;
+            self.env.push(self.depth);
         }
     }
 }
@@ -262,7 +267,7 @@ impl Mixer {
             release_s: 0.4,
             hold: false,
             active: false,
-            gain: 1.0,
+            depth: 0.0,
             env: Vec::with_capacity(8192),
         };
         let mut m = Mixer {
@@ -367,6 +372,7 @@ impl Mixer {
             stop_fade: tile.stop_fade,
             curve: tile.fade_curve,
             duck: tile.duck,
+            duck_level: duck_level(tile),
             speed: tile.speed.clamp(0.5, 2.0) as f64,
             gain: initial,
             state: VoiceState::Playing,
@@ -395,6 +401,7 @@ impl Mixer {
             v.stop_fade = tile.stop_fade;
             v.looping = tile.looping;
             v.duck = tile.duck;
+            v.duck_level = duck_level(tile);
             v.curve = tile.fade_curve;
             v.speed = tile.speed.clamp(0.5, 2.0) as f64;
             if !v.released {
@@ -594,6 +601,7 @@ impl Mixer {
         let ducks = self.duck.hold || self.voice.load(Ordering::Relaxed) || self.duck_bus.load(Ordering::Relaxed) != 0;
         self.duck.block(out.len() / channels, ducks);
         let env = &self.duck.env;
+        let library_level = self.duck.level;
         let frames = out.len() / channels;
         let mut sounded = 0;
 
@@ -607,7 +615,8 @@ impl Mixer {
             let step = src_rate * v.speed / out_rate;
             let heard = src_rate * v.speed;
             let length = (v.seg_end - v.seg_start) / heard;
-            let ducked = v.duck == Duck::Ducked;
+            // How far this voice dips at full duck (1 − its level), if it's a bed.
+            let dip = (v.duck == Duck::Ducked).then(|| 1.0 - v.duck_level.unwrap_or(library_level));
             for (i, frame) in out.chunks_exact_mut(channels).enumerate() {
                 let position = (v.pos - v.seg_start) / heard;
                 let elapsed = v.elapsed as f64 / out_rate;
@@ -644,7 +653,10 @@ impl Mixer {
                 } else {
                     v.gain += (target - v.gain) * smooth;
                 }
-                let mut gain = if ducked { v.gain * env[i] } else { v.gain };
+                let mut gain = match dip {
+                    Some(dip) => v.gain * (1.0 - env[i] * dip),
+                    None => v.gain,
+                };
                 if let Some((left, total)) = &mut v.xfade {
                     // Counted down first, like the ghost's stop, so the two add up to one.
                     *left -= 1;
@@ -1559,6 +1571,11 @@ impl Engine {
     }
 }
 
+/// A tile's own duck level as a linear gain, `None` when it follows the library's.
+fn duck_level(tile: &Tile) -> Option<f32> {
+    tile.duck_db.map(|db| db_to_gain(db.min(0.0)))
+}
+
 /// dB from a duck level's linear gain (for copying a mixer's duck settings).
 fn gain_to_db_floor(g: f32) -> f32 {
     if g <= 0.0 {
@@ -1838,6 +1855,72 @@ mod tests {
         let out = render(&mut m, 700);
         assert!(!m.ducking());
         assert!((out[690] - 1.0).abs() < 0.01, "{}", out[690]);
+    }
+
+    #[test]
+    fn a_bed_with_its_own_level_dips_by_it_while_another_follows_the_library() {
+        let mut m = Mixer::new(RATE);
+        m.set_duck(-6.0, 0.0, 0.0);
+        let own = Tile { duck: Duck::Ducked, duck_db: Some(-20.0), looping: true, ..tile() };
+        let follows = Tile { duck: Duck::Ducked, looping: true, ..tile() };
+        m.play(&own, dc(1.0));
+        m.play(&follows, dc(1.0));
+        m.set_duck_hold(true);
+        let out = render(&mut m, 100);
+        let want = 0.5 * db_to_gain(-20.0) + 0.5 * db_to_gain(-6.0);
+        assert!((out[90] - want).abs() < 0.005, "{} ≠ {want}", out[90]);
+        // The library's amount changes only the bed that follows it.
+        m.set_duck(-12.0, 0.0, 0.0);
+        let out = render(&mut m, 100);
+        let want = 0.5 * db_to_gain(-20.0) + 0.5 * db_to_gain(-12.0);
+        assert!((out[90] - want).abs() < 0.005, "{} ≠ {want}", out[90]);
+        // A level set while it plays applies at once; back to the default, it follows again.
+        m.update_params(&Tile { duck_db: Some(0.0), ..own.clone() });
+        let out = render(&mut m, 100);
+        assert!((out[90] - (0.5 + 0.5 * db_to_gain(-12.0))).abs() < 0.005, "0 dB doesn't dip: {}", out[90]);
+        m.update_params(&Tile { duck_db: None, ..own.clone() });
+        let out = render(&mut m, 100);
+        assert!((out[90] - db_to_gain(-12.0)).abs() < 0.005, "{}", out[90]);
+        m.set_duck_hold(false);
+        let out = render(&mut m, 100);
+        assert!((out[90] - 1.0).abs() < 0.005, "both back up: {}", out[90]);
+    }
+
+    /// A muted tile (D-251) plays silently: its time runs, its meter reads nothing, it
+    /// still ducks the beds, a muted bed still dips, and unmuting brings it back mid-play.
+    #[test]
+    fn a_muted_tile_is_silent_but_keeps_its_timing_and_its_ducking() {
+        let mut m = Mixer::new(RATE);
+        m.set_duck(-12.0, 0.0, 0.0);
+        let bed = Tile { duck: Duck::Ducked, looping: true, ..tile() };
+        let voice = Tile { duck: Duck::Ducks, muted: true, volume: 0.8, ..tile() };
+        m.play(&bed, dc(1.0));
+        m.play(&voice, dc(0.5));
+        let out = render(&mut m, 200);
+        assert!(m.ducking(), "a muted ducker still ducks");
+        assert!((out[190] - 0.5 * db_to_gain(-12.0)).abs() < 0.005, "only the dipped bed sounds: {}", out[190]);
+        assert!((m.statuses()[&voice.id].position - 0.2).abs() < 0.01, "its time runs");
+        let mut levels = HashMap::new();
+        m.take_levels(&mut levels);
+        assert!(levels.get(&voice.id).is_none_or(|l| *l < 1e-6), "its meter is silent: {levels:?}");
+        // Unmuted while it plays: it sounds at its kept volume, from where it is.
+        m.update_params(&Tile { muted: false, ..voice.clone() });
+        let out = render(&mut m, 100);
+        assert!((out[90] - (0.5 * db_to_gain(-12.0) + 0.5 * 0.8)).abs() < 0.01, "{}", out[90]);
+        // It ends on time and the bed comes back up; a muted bed then dips silently.
+        render(&mut m, 300);
+        assert_eq!(m.state(voice.id), PlayState::Stopped);
+        render(&mut m, 10); // the duck is decided per block
+        assert!(!m.ducking());
+        m.update_params(&Tile { muted: true, ..bed.clone() });
+        let out = render(&mut m, 100);
+        assert!(out[90].abs() < 1e-3, "a muted bed is silent: {}", out[90]);
+        assert_eq!(m.state(bed.id), PlayState::Playing);
+        // Solo still works from a muted tile: it stops the others.
+        let solo = Tile { solo: true, muted: true, ..tile() };
+        m.play(&solo, dc(1.0));
+        render(&mut m, 300);
+        assert_eq!(m.state(bed.id), PlayState::Stopped, "a muted solo tile still stops the others");
     }
 
     #[test]
