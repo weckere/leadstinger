@@ -6,7 +6,7 @@ a cue list, for podcasts, streams, theatre and game nights. Everything it does c
 be scripted from the command line, so key binds, Stream Deck buttons and AI agents can
 drive it.
 
-![LeadStinger's Console theme: sets in a sidebar, a grid of clip tiles with waveforms, a countdown and a stereo meter](docs/screenshots/console-grid.png)
+![LeadStinger's Console theme: sets in a sidebar, a grid of clip tiles with their waveforms, three of them playing, a countdown and a stereo meter](docs/screenshots/console-grid.png)
 
 ![The Panel theme: the same board in a retro sci-fi control-panel look](docs/screenshots/panel-grid.png)
 
@@ -508,6 +508,8 @@ scripts/linux-check.sh           # on a Linux host with Nix: tests, a release bu
 
 Run the app with `LEADSTINGER_SNAPSHOT=out.png` (and optionally `LEADSTINGER_SCRIPT` and
 `LEADSTINGER_SILENT=1`) and it saves a screenshot and exits.
+`scripts/screenshots.sh` retakes the four screenshots at the top of this README from the
+demo library (on a Retina Mac, for their 2560x1600 size).
 `LEADSTINGER_BACKGROUND=1` (on by itself with `LEADSTINGER_SNAPSHOT`; `=0` turns it off)
 keeps a test run out of your way: on macOS the app takes no focus, has no Dock icon and
 its window is invisible and click-through, while screenshots and `leadstinger-cli` still

@@ -16,11 +16,11 @@ use std::collections::{BTreeSet, HashSet};
 /// The gaps left, as [`gaps`] words them.
 const KNOWN_GAPS: &[&str] = &[];
 
-/// A library like `LEADSTINGER_DEMO=1`'s, plus an action tile and a 5.1 tile in "Game Night".
+/// A library like `LEADSTINGER_DEMO=1`'s (its first 12 and 6 tiles), plus an action tile and a 5.1 tile in "Game Night".
 fn library() -> (Store, PathBuf) {
     let dir = std::env::temp_dir().join(format!("{}-a11y-{}", crate::brand::SLUG, Uuid::new_v4()));
     let mut store = Store::open(dir.clone()).expect("open a scratch library");
-    crate::demo::populate_if_empty(&mut store).expect("demo library");
+    crate::demo::populate_for_tests(&mut store).expect("demo library");
     (store, dir)
 }
 

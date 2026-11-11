@@ -694,6 +694,7 @@ impl StingerApp {
             // The import under way, with room for the file name (the left text has none).
             _ if importing.is_some() => (importing.unwrap_or_default(), pal.peach),
             (_, None, Some(name)) => (format!("{name}  ·  {} kHz", self.ctl.engine.sample_rate() as f32 / 1000.0), pal.lilac),
+            (_, Some(_), _) => (String::new(), pal.lilac),
             _ => ("No output".to_owned(), theme::panel_dim(ui.ctx())),
         };
         let galley = ui.fonts_mut(|f| {

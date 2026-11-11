@@ -55,7 +55,8 @@ libraries the README lists.
 - **UI changes** need a screenshot: run the app with `LEADSTINGER_SNAPSHOT=out.png`
   (plus `LEADSTINGER_SCRIPT`, `LEADSTINGER_WINDOW_SIZE`, `LEADSTINGER_DEMO=1`; see
   `leadstinger --help`) and look at the result, in both themes and at narrow widths down
-  to 720 px.
+  to 720 px. `scripts/screenshots.sh` retakes the README's screenshots from the demo
+  library.
 - **Stay out of the way of whoever is at the computer.** Set `LEADSTINGER_BACKGROUND=1`
   for every run that isn't for a person to look at (a snapshot run sets it by itself):
   on macOS the app then takes no focus, shows no Dock icon and its window can't be

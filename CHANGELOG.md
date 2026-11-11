@@ -6,6 +6,32 @@ All notable changes to LeadStinger. The format follows
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-10
+
+### Changed
+
+- **A new icon: an audio cassette.** The broadcast cart is gone; in its place is a
+  compact cassette seen straight on, an amber shell with a peach label (the waveform
+  runs along its top), the tape window with two reel hubs, and the trapezoid along the
+  bottom edge, on the same dark plate with amber beams. It is the app, Dock and
+  launcher icon at every size (16 and 32 px from a simpler twin: the window and two
+  hubs) and the mark beside the name in the toolbar. The mark alone is now
+  `assets/icons/cassette.svg`, `cassette-{16,32,64}.png` and `cassette-mono.svg` (one
+  colour, `currentColor`), in place of the `cart*` files.
+- **The demo library sounds like a real board** (`LEADSTINGER_DEMO=1`). Its sounds are
+  synthesized in code from a fixed seed instead of steady tones: spoken lines, hits with a
+  sharp attack and decay, a drum roll that builds, applause that swells and dies away,
+  crickets, a phone ringing in pairs, music beds with beats and phrases. Game Night has 16
+  tiles (four spoken lines are new) and Theatre Cues 8 (Thunder and a Closing
+  Announcement). D-258.
+- The README's screenshots are retaken from it, with the 0.3.0 window, and
+  `scripts/screenshots.sh` retakes them in one command.
+
+### Fixed
+
+- Panel's status bar no longer says "No output" in a silent run (`LEADSTINGER_SILENT=1`),
+  so screenshots show the app as people see it.
+
 ## [0.3.0] - 2026-11-10
 
 ### Added
@@ -866,7 +892,8 @@ The first public release.
   binds can fire clips from anywhere.
 - A Nix flake with a package, a dev shell, the NixOS module and a VM test.
 
-[Unreleased]: https://github.com/weckere/leadstinger/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/weckere/leadstinger/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/weckere/leadstinger/releases/tag/v0.3.1
 [0.3.0]: https://github.com/weckere/leadstinger/releases/tag/v0.3.0
 [0.2.1]: https://github.com/weckere/leadstinger/releases/tag/v0.2.1
 [0.2.0]: https://github.com/weckere/leadstinger/releases/tag/v0.2.0

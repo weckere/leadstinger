@@ -1947,6 +1947,22 @@ Each decision with its reasoning and the alternatives that were turned down.
 
 **Alternatives:** Wait for the maintainer's live checks; 0.2.2
 
+### D-257: LeadStinger's icon is a compact audio cassette, replacing D-094's broadcast cart: seen square on, landscape, on the same dark plate with D-094's amber beams fanning above it, a warm glow and white glints (draft C1 'beams'). An amber shell, a peach label across its face with the D-128 waveform bars along its top, a dark tape window with two peach reel hubs (spline teeth) and brown tape wound round them, the darker trapezoid along the bottom edge with its holes, and five screws. The 16/32 px twin drops the label, screws, holes, teeth and waveform and has a taller window with bigger hubs. docs/design/logo.py draws it (set 'cassette' for the drafts, 'ship' for what ships, 'cart' keeps the old icon); scripts/icons.sh exports it; the mark alone is now assets/icons/cassette.svg, cassette-{16,32,64}.png and cassette-mono.svg (the cart* files are gone); theme::paint_cassette draws it in the toolbar.
+
+*2026-11-10 · M22*
+
+**Why:** The maintainer (2026-11-10): a broadcast cart is the more exact object for a stinger player, but few people recognise one; a cassette reads as 'tape / audio' at a glance. Keeping D-094's plate, beams, glow, glints and amber/peach palette and D-128's waveform (moved from the cart's front edge to the label) keeps it recognisably the same app. Straight on, the cassette's landscape shape fills the plate's width and its two hubs in a window stay the cue down to 16 px.
+
+**Alternatives:** C2 'tilted' (the same cassette turned 12 degrees in a full burst of rays): livelier at Dock size but the diagonal edges smear at 32 and 16 px and the tilted window no longer reads as two hubs. C3 'strip' (no light label, a dark strip across the top with the waveform lit amber, glow only): bold, but without the peach face the shell reads as a box at 64 px and it drops D-094's beams, so it looks like a different app. Keeping the cart (D-094): rejected by the maintainer as not recognisable.
+
+### D-258: The demo library (LEADSTINGER_DEMO=1) is synthesized in code from a fixed seed (src/demo/synth.rs: speech-like babble, drum/bell hits, shaped noise, music beds) instead of steady tones, and grows to 16 Game Night tiles (four spoken game-show lines: Welcome Back!, The Answer Is…, Time's Up!, Ooh, So Close!) and 8 Theatre Cues (Thunder, Closing Announcement), the new ones after the old so the window tests keep their 12+6 board (demo::populate_for_tests). The sine and exp are polynomials on f64 so the samples are bit-identical on every platform; a test pins their hash. Panel's status bar says nothing (not 'No output') in a silent run.
+
+*2026-11-10*
+
+**Why:** The maintainer wants the README screenshots to show waveforms as interesting as the gift board's, which is real dialogue and effects; the gift clips can't go public and no audio files should be added, so the sounds are generated. Appending keeps 8 index- and count-based a11y tests meaningful without rewriting them. Own sin/exp because libm results can differ by an ulp between platforms.
+
+**Alternatives:** Ship recorded CC0 clips (adds binary files and licences); keep 12 tiles and only reshape them (no dialogue, which is what makes the gift board look real); rewrite the a11y tests for the 16/8 board (large churn in tests unrelated to this change); a third demo set (changes every 'set N of 2' label).
+
 18 decisions about private infrastructure and the gift edition are left out of the public snapshot: D-013, D-015, D-023, D-030, D-031, D-033, D-036, D-037, D-038, D-130, D-137, D-138, D-139, D-162, D-174, D-186, D-242, D-244.
 
 ## Tests

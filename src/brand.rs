@@ -29,8 +29,8 @@ pub const PANEL_LOGO: (&str, &str, &str) = ("LeadST", ":", "TNGer");
 pub const PANEL_SUBTITLE: &str = "PADD  ·  Sound cue control";
 /// The small readout above "Sets" in the Panel theme.
 pub const PANEL_TAG: &str = concat!("V", env!("CARGO_PKG_VERSION"));
-/// The app icon: a broadcast cart with a waveform on its edge (docs/design/logo.py,
-/// D-094, D-128), drawn by scripts/icons.sh. The window icon is this PNG. On macOS it
+/// The app icon: a compact cassette with a waveform along its label (docs/design/logo.py,
+/// D-257, D-128), drawn by scripts/icons.sh. The window icon is this PNG. On macOS it
 /// is also the Dock's and the app switcher's while the app runs, so there it is the
 /// macOS artwork, on Apple's smaller plate, the same size as other apps' (D-129).
 #[cfg(target_os = "macos")]

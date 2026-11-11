@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Regenerate LeadStinger's icons from docs/design/logo.py (D-094), from the repo root.
+# Regenerate LeadStinger's icons from docs/design/logo.py (a cassette, D-257; it
+# replaced D-094's cart), from the repo root.
 # Needs python3 and figcraft-cli; the .icns step needs macOS (iconutil). Writes:
 #   assets/linux/leadstinger.svg          the launcher icon, scalable
 #   assets/icons/leadstinger-N.png        the same at N = 16 32 64 128 256 512 px; 16 and
@@ -8,8 +9,9 @@
 #   assets/icons/leadstinger-macos.png    the macOS icon at 512 px: the window icon on
 #                                         macOS, which is also the Dock's while the app
 #                                         runs, so it sits on Apple's plate (D-129)
-#   assets/icons/cart.svg, cart-N.png     the cart alone, in colour (small buttons)
-#   assets/icons/cart-mono.svg            the cart alone in one colour (currentColor)
+#   assets/icons/cassette.svg, cassette-N.png
+#                                         the cassette alone, in colour (small buttons)
+#   assets/icons/cassette-mono.svg        the cassette alone in one colour (currentColor)
 #   assets/macos/LeadStinger.icns         the macOS app icon (scripts/bundle-macos.sh)
 #   docs/design/logo/ship.figcraft        the FigCraft document they come from
 set -euo pipefail
@@ -31,14 +33,14 @@ at() { if [ "$2" -le 32 ]; then echo "$tmp/$2/$1 small.png"; else echo "$tmp/$2/
 
 mkdir -p assets/icons assets/macos
 cp "$tmp/svg/leadstinger.svg" assets/linux/leadstinger.svg
-cp "$tmp/svg/cart.svg" assets/icons/cart.svg
-sed 's/fill="#000000"/fill="currentColor"/g' "$tmp/svg/cart-mono.svg" > assets/icons/cart-mono.svg
+cp "$tmp/svg/cassette.svg" assets/icons/cassette.svg
+sed 's/fill="#000000"/fill="currentColor"/g' "$tmp/svg/cassette-mono.svg" > assets/icons/cassette-mono.svg
 for px in 16 32 64 128 256 512; do
   cp "$(at leadstinger $px)" "assets/icons/leadstinger-$px.png"
 done
 cp "$(at macos 512)" assets/icons/leadstinger-macos.png
 for px in 16 32 64; do
-  cp "$(at cart $px)" "assets/icons/cart-$px.png"
+  cp "$(at cassette $px)" "assets/icons/cassette-$px.png"
 done
 
 if command -v iconutil >/dev/null; then

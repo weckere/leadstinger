@@ -10,7 +10,7 @@ options:
     iOS: "17.0"
 settings:
   base:
-    MARKETING_VERSION: "0.3.0"
+    MARKETING_VERSION: "0.3.1"
     CURRENT_PROJECT_VERSION: "1"
     DEVELOPMENT_TEAM: ${LEADSTINGER_TEAM}
     CODE_SIGN_STYLE: Automatic

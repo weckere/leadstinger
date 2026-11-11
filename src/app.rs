@@ -4057,19 +4057,19 @@ impl Meter {
     }
 }
 
-/// The app's mark beside its name: the cart (theme::paint_cart); `compact` draws the
-/// mark alone.
+/// The app's mark beside its name: the cassette (theme::paint_cassette); `compact` draws
+/// the mark alone.
 fn paint_wordmark(ui: &mut Ui, compact: bool) {
     let t = Tokens::get(ui.ctx());
-    let (rect, _) = ui.allocate_exact_size(vec2(if compact { 22.0 } else { 150.0 }, 28.0), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(vec2(if compact { 30.0 } else { 158.0 }, 28.0), Sense::hover());
     let p = ui.painter();
-    theme::paint_cart(p, Rect::from_min_size(rect.left_center() + vec2(0.0, -12.0), vec2(20.0, 24.0)));
+    theme::paint_cassette(p, Rect::from_min_size(rect.left_center() + vec2(0.0, -9.0), vec2(28.0, 18.0)));
     if compact {
         return;
     }
     // The logo's three parts (src/brand.rs), the middle one in the accent colour.
     let (a, colon, b) = crate::brand::LOGO;
-    let mut x = rect.left() + 28.0;
+    let mut x = rect.left() + 36.0;
     for (part, color) in [(a, t.text), (colon, t.accent), (b, t.text)] {
         let r = p.text(pos2(x, rect.center().y), Align2::LEFT_CENTER, part, theme::bold(17.0), color);
         x = r.right() + if part == colon { 0.5 } else { 0.0 };

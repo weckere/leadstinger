@@ -1320,8 +1320,9 @@ takes those drops; a set window doesn't (D-227).
 
 ## App icon
 
-The icon is a broadcast cart with a waveform along its top edge (D-094, D-128), and it
-is the window icon too. On macOS the running app's Dock and app-switcher icon
+The icon is a compact audio cassette with a waveform along the top of its label, on a
+dark plate with amber beams (D-257, which replaced D-094's broadcast cart; D-128), and it
+is the window icon too. The Console toolbar draws the same cassette beside the name. On macOS the running app's Dock and app-switcher icon
 is the window icon, so there it is the macOS artwork on Apple's 824-of-1024 px plate,
 the same size as other apps' icons (D-129); elsewhere it is the 256 px launcher icon.
 

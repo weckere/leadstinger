@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """Generate the LeadStinger logo drafts as a FigCraft command script.
 
-The mark is a broadcast cart, the tape cartridge radio stations fired jingles and
-stingers from. Drawn in a 100 x 100 plate grid, then scaled to 1024 px; each draft is
-one top-level frame, with a simplified 16/32 px twin under it. The drafts come in sets:
-  duster  the cart worn across a fist like a knuckle-duster (round 2)
-  held    a fist holding the cart up, fingers through holes in its back end (rounds 3-14)
-  power   the cart alone, as an object of power
-  ship    what ships, from R2 "beams" (D-094): the Linux icon (full plate), the macOS icon
-          (Apple's 824 px plate on a 1024 canvas), each with its 16/32 px twin, and the
-          cart on its own in colour and in one colour; scripts/icons.sh exports them
+The mark is a compact audio cassette (D-257, after 0.3.0; before it D-094's broadcast cart, the
+tape cartridge radio stations fired jingles and stingers from: the cassette is less
+exact but far more recognisable). Drawn in a 100 x 100 plate grid, then scaled to
+1024 px; each draft is one top-level frame, with a simplified 16/32 px twin under it.
+The drafts come in sets:
+  duster    the cart worn across a fist like a knuckle-duster (round 2)
+  held      a fist holding the cart up, fingers through holes in its back end (rounds 3-14)
+  power     the cart alone, as an object of power
+  cart      the cart that shipped until 0.3.0 (R2 "beams")
+  cassette  the cassette drafts: C1 beams (ships), C2 tilted, C3 strip
+  ship      what ships, draft C1: the Linux icon (full plate), the macOS icon (Apple's
+            824 px plate on a 1024 canvas), each with its 16/32 px twin, and the cassette
+            on its own in colour and in one colour; scripts/icons.sh exports them
 Usage: logo.py OUT.json [SET]
 """
 import json, math, os, sys
@@ -704,13 +708,174 @@ def fit(inset):
 
 R2 = dict(POWER_COLOURS, rays=AMBER, rays_a=0.45)
 GLYPH_FIT = T(cy=MIDDLE[1], dy=50 - MIDDLE[1], s=1.6)
-SETS["ship"] = [
+SMALL = T(cy=30, s=1.1)
+
+
+# ── the cassette (D-257, D-094's successor) ──────────────────────────────────────
+#
+# A generic compact cassette seen square on, landscape: the shell, the label across its
+# face with the D-128 waveform along its top, the tape window with two reel hubs and the
+# tape wound round them, the trapezoid along the bottom edge with its holes, and the
+# screws. Drawn about the plate's middle, 80 wide and 51 high (a real cassette's 1.57:1).
+
+CX0, CX1, CY0, CY1 = 10.0, 90.0, 24.0, 75.0     # the shell
+HUBS = (36.5, 63.5)                             # the hubs' x; they sit on y = WIN_Y
+WIN_Y = 47.0
+
+
+def trap_pts(inset=0.0):
+    """The trapezoid along the bottom edge, clockwise; `inset` shrinks it (not its foot)."""
+    return [(29.0 + inset, 63.0 + inset), (71.0 - inset, 63.0 + inset),
+            (76.0 - inset * 1.4, CY1), (24.0 + inset * 1.4, CY1)]
+
+
+def tooth(t, cx, cy, deg, r0, r1, w):
+    """One spline tooth of a hub, pointing in from radius r1 to r0."""
+    a = math.radians(deg)
+    c, s_ = math.cos(a), math.sin(a)
+    n = (-s_ * w / 2, c * w / 2)
+    return poly(t, [(cx + r0 * c - n[0], cy + r0 * s_ - n[1]), (cx + r1 * c - n[0], cy + r1 * s_ - n[1]),
+                    (cx + r1 * c + n[0], cy + r1 * s_ + n[1]), (cx + r0 * c + n[0], cy + r0 * s_ + n[1])])
+
+
+def cassette(t, small=False, label="peach"):
+    """The cassette's parts as paths. `small` is the 16/32 px twin: a taller window and
+    bigger hubs, nothing finer. `label` "peach" is a light label over the whole face;
+    "strip" is a dark band across the top only, the waveform lit in amber on it."""
+    win = (22.0, 34.0, 78.0, 59.0) if small else (28.0, 39.0, 72.0, 55.0)
+    hub_r = 6.8 if small else 4.4
+    k = {
+        "shell": rrect(t, CX0, CY0, CX1, CY1, 4.5),
+        "window": rrect(t, *win, (win[3] - win[1]) / 2),
+        "tape": " ".join([circle(t, HUBS[0], WIN_Y, 7.4, cw=True), circle(t, HUBS[1], WIN_Y, 5.4, cw=True)]),
+        "hubs": " ".join(circle(t, x, 46.5 if small else WIN_Y, hub_r, cw=True)
+                         for x in ((35.0, 65.0) if small else HUBS)),
+        "hub_holes": " ".join(circle(t, x, WIN_Y, 2.5, cw=True) for x in HUBS),
+        "teeth": " ".join(tooth(t, x, WIN_Y, a, 1.5, 2.7, 1.0) for x in HUBS for a in range(0, 360, 60)),
+        "trap": poly(t, trap_pts()),
+        "trap_holes": " ".join([circle(t, 41.0, 69.5, 1.6, cw=True), circle(t, 59.0, 69.5, 1.6, cw=True),
+                                rrect(t, 30.0, 67.5, 34.0, 71.5, 1.0), rrect(t, 66.0, 67.5, 70.0, 71.5, 1.0),
+                                rrect(t, 47.0, 66.5, 53.0, 69.0, 0.8)]),
+        "screws": " ".join(circle(t, x, y, 1.15, cw=True)
+                           for x, y in [(14.2, 28.2), (85.8, 28.2), (14.2, 70.8), (85.8, 70.8), (50.0, 60.4)]),
+    }
+    if label == "strip":
+        k["label"] = rrect(t, 15.0, 28.0, 85.0, 36.0, 2.0)
+        k["wave"] = wave(t, 19.0, 81.0, 32.0, 2.6, "bars")
+    else:
+        k["label"] = rrect(t, 15.0, 28.0, 85.0, 59.0, 2.6)
+        k["wave"] = wave(t, 20.0, 80.0, 33.4, 4.0, "bars")
+    if small:
+        k["label"] = None      # too faint a step from the shell to read at 16 px
+    return k
+
+
+def draw_cassette(s, frame, k, c, small):
+    vec(s, frame, "shell", k["shell"], fill=c["shell"])
+    vec(s, frame, "trapezoid", k["trap"], fill=c["edge"])
+    if k["label"]:
+        vec(s, frame, "label", k["label"], fill=c["label"])
+    vec(s, frame, "window", k["window"], fill=c["window"])
+    if not small:
+        vec(s, frame, "wave", k["wave"], fill=c["wave"])
+        # The tape wound round each hub, clipped to the window.
+        vec(s, frame, "tape", k["tape"], fill=c["tape"])
+        vec(s, frame, "screws", k["screws"], fill=c["edge"])
+        vec(s, frame, "trapezoid holes", k["trap_holes"], fill=c["window"])
+    vec(s, frame, "hubs", k["hubs"], fill=c["hub"])
+    if not small:
+        vec(s, frame, "hub holes", k["hub_holes"], fill=c["window"])
+        vec(s, frame, "teeth", k["teeth"], fill=c["hub"])
+
+
+def lit_cassette(s, frame, t, c, label="peach", burst=None, glints=(), glow=True):
+    """The cassette on the plate, a glow behind it, beams fanning out above it."""
+    small = c.get("small")
+    k = cassette(t, small=small, label=label)
+    if glow:
+        X, Y = t(50, 50)
+        R = 48 * U * t.s
+        s._node("ellipse", frame, "glow", X - R, Y - R, 2 * R, 2 * R, {"fills": [
+            {"type": "radialGradient", "stops": [c["glow"] + "AA", c["glow"] + "33", c["glow"] + "00"]}]})
+    if not small and burst:
+        n, r0, r1, spread, a0, a1 = burst
+        vec(s, frame, "rays", rays(t, 50, 50, n, r0, r1, spread, a0, a1), fill=c["rays"],
+            opacity=c.get("rays_a", 1))
+    draw_cassette(s, frame, k, c, small)
+    if not small:
+        for i, (gx, gy, gr) in enumerate(glints):
+            vec(s, frame, f"glint {i + 1}", sparkle(t, gx, gy, gr), fill=c.get("glint", WHITE))
+
+
+BEAMS = (7, 30, 85, 12, 200, 340)
+GLINTS = [(14, 15, 4.2), (86, 16, 3.0), (84, 86, 2.6)]
+
+
+def c1_beams(s, frame, t, c):
+    lit_cassette(s, frame, t, c, burst=BEAMS, glints=GLINTS)
+
+
+def c2_tilted(s, frame, t, c):
+    lit_cassette(s, frame, t, c, burst=(12, 30, 85, 7, 0, 360), glints=[(14, 16, 4.0), (86, 84, 3.0)])
+
+
+def c3_strip(s, frame, t, c):
+    lit_cassette(s, frame, t, c, label="strip", glints=[(15, 14, 3.6)])
+
+
+def cassette_glyph(t):
+    """The cassette alone as ONE path, for one colour (small buttons): the shell, with the
+    tape window cut out and the two hubs left standing in it (their holes cut), the
+    trapezoid's outline cut as a thin line and its holes cut through."""
+    k = cassette(t)
+    inner = trap_pts(1.6)
+    outer = trap_pts()
+    return " ".join([
+        rrect(t, CX0, CY0, CX1, CY1, 4.5),
+        rrect(t, 26.0, 37.5, 74.0, 56.5, 9.5, ccw=True),
+        " ".join(circle(t, x, WIN_Y, 6.2, cw=True) for x in HUBS),
+        " ".join(circle(t, x, WIN_Y, 2.6) for x in HUBS),
+        poly(t, list(reversed(outer))), poly(t, inner[:2] + [(inner[2][0], CY1), (inner[3][0], CY1)]),
+        circle(t, 40.0, 69.5, 1.9), circle(t, 60.0, 69.5, 1.9),
+    ])
+
+
+def cassette_only(s, frame, t, c):
+    """The cassette alone, flat, no glow: for small buttons and the toolbar."""
+    draw_cassette(s, frame, cassette(t, small=c.get("small", False)), c, small=c.get("small", False))
+
+
+def cassette_mono(s, frame, t, c):
+    vec(s, frame, "cassette", cassette_glyph(t), fill=c["ink"])
+
+
+CASSETTE = dict(plate=INK, glow=AMBER, rays=AMBER, rays_a=0.45, shell=AMBER, edge="#C46E1E",
+                label=PEACH, window=INK, wave=INK, tape="#6A3E1E", hub=PEACH)
+STRIP = dict(CASSETTE, label=INK2, wave=AMBER)
+ON_PLATE_C = T(s=1.06)
+SETS["cassette"] = [
+    ("C1 beams", c1_beams, ON_PLATE_C, CASSETTE),
+    ("C2 tilted", c2_tilted, T(-12, s=0.98), CASSETTE),
+    ("C3 strip", c3_strip, T(s=1.12), STRIP),
+    ("Cassette", cassette_only, T(s=1.2), dict(CASSETTE, plate=None)),
+    ("Cassette mono", cassette_mono, T(s=1.2), dict(plate=None, ink=AMBER)),
+]
+# The cart that shipped from D-094 to 0.3.0 (R2 "beams"), kept to compare.
+SETS["cart"] = [
     ("leadstinger", beams, ON_PLATE, R2),
-    ("macos", beams, fit(100), dict(R2, inset=100)),
     ("cart", plain_cart, GLYPH_FIT, dict(R2, plate=None)),
     ("cart-mono", plain_glyph, GLYPH_FIT, dict(plate=None, ink="#000000")),
 ]
-SMALL = T(cy=30, s=1.1)
+# What ships: draft C1 (D-257). The Linux icon (full plate), the macOS icon
+# (Apple's 824 px plate on 1024), each with its 16/32 px twin, and the cassette alone in
+# colour and in one colour; scripts/icons.sh exports them.
+MAC = (PX - 200) / PX          # Apple's plate, 824 of 1024 px
+SETS["ship"] = [
+    ("leadstinger", c1_beams, ON_PLATE_C, CASSETTE),
+    ("macos", c1_beams, T(s=1.06 * MAC, dx=50 * MAC - 50, dy=50 * MAC - 50), dict(CASSETTE, inset=100)),
+    ("cassette", cassette_only, T(s=1.2), dict(CASSETTE, plate=None)),
+    ("cassette-mono", cassette_mono, T(s=1.2), dict(plate=None, ink="#000000")),
+]
 
 
 def script():
@@ -720,7 +885,7 @@ def script():
         draw(s, plate(s, fr, c), t, c)
         # The 16/32 px twin: the same pose a little bigger, details dropped.
         sc = dict(small[0] if small else c, small=True)
-        st = t if (t.s != 1 or SET in ("power", "ship")) else T(math.degrees(t.a), 50, SMALL.cy, t.dx, t.dy, SMALL.s)
+        st = t if (t.s != 1 or SET in ("power", "ship", "cassette")) else T(math.degrees(t.a), 50, SMALL.cy, t.dx, t.dy, SMALL.s)
         fr = s.frame(None, name + " small", i * (PX + 96), PX + 96, PX, PX)
         draw(s, plate(s, fr, sc), st, sc)
     return s
