@@ -1320,9 +1320,12 @@ takes those drops; a set window doesn't (D-227).
 
 ## App icon
 
-The icon is a compact audio cassette with a waveform along the top of its label, on a
-dark plate with amber beams (D-257, which replaced D-094's broadcast cart; D-128), and it
-is the window icon too. The Console toolbar draws the same cassette beside the name. On macOS the running app's Dock and app-switcher icon
+The icon is a compact audio cassette drawn flat, in the style of QuipClipper's icon: one
+dark stroke glyph (the shell, two hub rings joined by the tape, and the trapezoid along
+the bottom edge) on a plain amber plate, with no other decoration (D-257, which replaced
+D-094's broadcast cart, made flat by D-259). At 16 and 32 px a simpler twin drops the
+trapezoid and has bigger hubs. It is the window icon too. The Console toolbar draws the
+icon in small beside the name. On macOS the running app's Dock and app-switcher icon
 is the window icon, so there it is the macOS artwork on Apple's 824-of-1024 px plate,
 the same size as other apps' icons (D-129); elsewhere it is the 256 px launcher icon.
 

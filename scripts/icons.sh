@@ -1,17 +1,19 @@
 #!/usr/bin/env bash
 # Regenerate LeadStinger's icons from docs/design/logo.py (a cassette, D-257; it
-# replaced D-094's cart), from the repo root.
+# replaced D-094's cart; flat since 0.3.1, a dark stroke glyph on an amber plate like
+# QuipClipper's icon), from the repo root.
 # Needs python3 and figcraft-cli; the .icns step needs macOS (iconutil). Writes:
 #   assets/linux/leadstinger.svg          the launcher icon, scalable
 #   assets/icons/leadstinger-N.png        the same at N = 16 32 64 128 256 512 px; 16 and
-#                                         32 come from the simplified small twin. The
-#                                         window icon is the 256 (theme::app_icon).
+#                                         32 come from the small twin (no trapezoid,
+#                                         bigger hubs, a heavier stroke). The window
+#                                         icon is the 256 (theme::app_icon).
 #   assets/icons/leadstinger-macos.png    the macOS icon at 512 px: the window icon on
 #                                         macOS, which is also the Dock's while the app
 #                                         runs, so it sits on Apple's plate (D-129)
 #   assets/icons/cassette.svg, cassette-N.png
-#                                         the cassette alone, in colour (small buttons)
-#   assets/icons/cassette-mono.svg        the cassette alone in one colour (currentColor)
+#                                         the glyph alone, in amber (small buttons)
+#   assets/icons/cassette-mono.svg        the glyph alone in one colour (currentColor)
 #   assets/macos/LeadStinger.icns         the macOS app icon (scripts/bundle-macos.sh)
 #   docs/design/logo/ship.figcraft        the FigCraft document they come from
 set -euo pipefail
@@ -34,7 +36,7 @@ at() { if [ "$2" -le 32 ]; then echo "$tmp/$2/$1 small.png"; else echo "$tmp/$2/
 mkdir -p assets/icons assets/macos
 cp "$tmp/svg/leadstinger.svg" assets/linux/leadstinger.svg
 cp "$tmp/svg/cassette.svg" assets/icons/cassette.svg
-sed 's/fill="#000000"/fill="currentColor"/g' "$tmp/svg/cassette-mono.svg" > assets/icons/cassette-mono.svg
+sed -e 's/fill="#000000"/fill="currentColor"/g' -e 's/stroke="#000000"/stroke="currentColor"/g' "$tmp/svg/cassette-mono.svg" > assets/icons/cassette-mono.svg
 for px in 16 32 64 128 256 512; do
   cp "$(at leadstinger $px)" "assets/icons/leadstinger-$px.png"
 done

@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
 """Generate the LeadStinger logo drafts as a FigCraft command script.
 
-The mark is a compact audio cassette (D-257, after 0.3.0; before it D-094's broadcast cart, the
-tape cartridge radio stations fired jingles and stingers from: the cassette is less
-exact but far more recognisable). Drawn in a 100 x 100 plate grid, then scaled to
+The mark is a compact audio cassette (D-257, after 0.3.0; before it D-094's broadcast cart,
+the tape cartridge radio stations fired jingles and stingers from: the cassette is less
+exact but far more recognisable). After 0.3.1 it is flat, in QuipClipper's style: one dark
+stroke glyph on a plain amber plate, no beams, glow or glints. Drawn in a 100 x 100 plate grid, then scaled to
 1024 px; each draft is one top-level frame, with a simplified 16/32 px twin under it.
 The drafts come in sets:
   duster    the cart worn across a fist like a knuckle-duster (round 2)
   held      a fist holding the cart up, fingers through holes in its back end (rounds 3-14)
   power     the cart alone, as an object of power
   cart      the cart that shipped until 0.3.0 (R2 "beams")
-  cassette  the cassette drafts: C1 beams (ships), C2 tilted, C3 strip
-  ship      what ships, draft C1: the Linux icon (full plate), the macOS icon (Apple's
-            824 px plate on a 1024 canvas), each with its 16/32 px twin, and the cassette
-            on its own in colour and in one colour; scripts/icons.sh exports them
+  cassette  the cassette drafts with flourishes: C1 beams (shipped in 0.3.1), C2 tilted,
+            C3 strip
+  flat      the flat cassette drafts, in QuipClipper's style: A stroke (ships), its
+            other twins, B dark, B amber, C dark
+  ship      what ships, flat draft A: the Linux icon (full plate), the macOS icon (Apple's
+            824 px plate on a 1024 canvas), each with its 16/32 px twin, and the glyph
+            on its own in amber and in one colour; scripts/icons.sh exports them
 Usage: logo.py OUT.json [SET]
 """
 import json, math, os, sys
@@ -291,7 +295,8 @@ def plate(s, frame, style):
         return frame
     i = style.get("inset", 0)
     if not i:
-        return s.frame(frame, "plate", 0, 0, PX, PX, fill=style["plate"], radius=PX * 0.1875)
+        return s.frame(frame, "plate", 0, 0, PX, PX, fill=style["plate"],
+                       radius=PX * style.get("radius", 0.1875))
     return s.frame(frame, "plate", i, i, PX - 2 * i, PX - 2 * i, fill=style["plate"],
                    radius=(PX - 2 * i) * 0.225, cornerSmoothing=0.6)
 
@@ -860,21 +865,131 @@ SETS["cassette"] = [
     ("Cassette", cassette_only, T(s=1.2), dict(CASSETTE, plate=None)),
     ("Cassette mono", cassette_mono, T(s=1.2), dict(plate=None, ink=AMBER)),
 ]
+# ── the flat cassette (after D-257: QuipClipper's flat style) ──────────────────────────
+#
+# The same cassette with no flourishes (no beams, glow or glints), drawn like QuipClipper's
+# icon: a flat plate and one glyph. The glyph is QuipClipper's Send to LeadStinger
+# cassette (its sprite's 24-unit grid: the shell, two hub rings joined by the tape, the
+# trapezoid), so the two apps' cassettes are one shape. G maps that grid onto the plate,
+# centred, GRID plate units to a grid unit.
+
+GRID = 3.5
+
+
+def G(t, x, y):
+    return t(50 + (x - 12) * GRID, 50 + (y - 12) * GRID)
+
+
+def g_path(t, cmds):
+    """Path data in grid units: a list of ("M"|"L", x, y), ("A", r, x, y, large, sweep) or
+    ("Z",), put through G and t."""
+    out = []
+    for c in cmds:
+        if c[0] == "Z":
+            out.append("Z")
+        elif c[0] == "A":
+            _, r, x, y, large, sweep = c
+            X, Y = G(t, x, y)
+            R = r * GRID * U * t.s
+            out.append(f"A{f(R)} {f(R)} 0 {large} {sweep} {f(X)} {f(Y)}")
+        else:
+            X, Y = G(t, c[1], c[2])
+            out.append(f"{c[0]}{f(X)} {f(Y)}")
+    return " ".join(out)
+
+
+def g_rrect(t, x0, y0, x1, y1, r):
+    return g_path(t, [("M", x0 + r, y0), ("L", x1 - r, y0), ("A", r, x1, y0 + r, 0, 1),
+                      ("L", x1, y1 - r), ("A", r, x1 - r, y1, 0, 1), ("L", x0 + r, y1),
+                      ("A", r, x0, y1 - r, 0, 1), ("L", x0, y0 + r), ("A", r, x0 + r, y0, 0, 1), ("Z",)])
+
+
+def g_circle(t, cx, cy, r):
+    return g_path(t, [("M", cx + r, cy), ("A", r, cx - r, cy, 1, 1), ("A", r, cx + r, cy, 1, 1), ("Z",)])
+
+
+HUB_X, HUB_Y, HUB_R = (8.5, 15.5), 11.0, 2.0
+# The trapezoid's feet stop short of the shell's bottom line so their round caps end
+# flush with the shell's stroke.
+TRAP = [(6.6, 18.7), (8.0, 15.75), (16.0, 15.75), (17.4, 18.7)]
+
+
+def flat_parts(t, hub_r=HUB_R):
+    """The glyph's parts: the shell, the hubs, the tape between them, the trapezoid (an
+    open line standing on the shell's bottom edge)."""
+    return {
+        "shell": g_rrect(t, 2.5, 5.0, 21.5, 19.0, 2.0),
+        "hubs": " ".join(g_circle(t, x, HUB_Y, hub_r) for x in HUB_X),
+        # The tape is in the hubs' path: a level line alone has no height to size it by.
+        "reels": " ".join([g_circle(t, x, HUB_Y, hub_r) for x in HUB_X] +
+                          [g_path(t, [("M", HUB_X[0] + hub_r, HUB_Y), ("L", HUB_X[1] - hub_r, HUB_Y)])]),
+        "trap": g_path(t, [("M", *TRAP[0])] + [("L", *p) for p in TRAP[1:]]),
+        "trap_fill": g_path(t, [("M", *TRAP[0])] + [("L", *p) for p in TRAP[1:]] + [("Z",)]),
+        "window": g_rrect(t, 5.6, 8.1, 18.4, 13.9, 2.9),
+    }
+
+
+def stroke_px(c, t):
+    """The glyph's stroke in px: `weight` plate units (QuipClipper's favicon: 5.9), a
+    little heavier on the 16/32 px twin."""
+    return c["weight"] * (c.get("small_k", 1.0) if c.get("small") else 1.0) * U * t.s
+
+
+def flat_a(s, frame, t, c):
+    """Draft A, QuipClipper's recipe: the cassette as one dark stroke glyph. With
+    `bare_small`, the 16/32 px twin drops the trapezoid (it smears into the hubs there)."""
+    bare = c.get("small") and c.get("bare_small")
+    k = flat_parts(t, hub_r=c.get("small_hub", HUB_R) if c.get("small") else HUB_R)
+    w = stroke_px(c, t)
+    for name in ("shell", "reels") if bare else ("shell", "reels", "trap"):
+        vec(s, frame, name, k[name], stroke=c["ink"], weight=w)
+    if bare and c.get("dots"):
+        vec(s, frame, "hub dots", k["hubs"], fill=c["ink"])
+
+
+def flat_b(s, frame, t, c):
+    """Draft B: a flat-colour cassette, the shell, window, two hubs and trapezoid."""
+    k = flat_parts(t, hub_r=2.1)
+    vec(s, frame, "shell", k["shell"], fill=c["shell"])
+    vec(s, frame, "trapezoid", k["trap_fill"], fill=c["edge"])
+    vec(s, frame, "window", k["window"], fill=c["window"])
+    vec(s, frame, "hubs", k["hubs"], fill=c["hub"])
+
+
+# Draft A ships: LeadStinger's orange amber, not QuipClipper's gold, so the two apps'
+# squares differ in tone as well as in glyph. Its 16/32 px twin is "bare": the shell and
+# two bigger hub rings, a heavier stroke, no trapezoid.
+FLAT = dict(plate=AMBER, ink=INK, weight=5.6, radius=0.25, bare_small=True, small_hub=2.4,
+            small_k=1.3)
+FLAT_B_DARK = dict(plate=INK, shell=AMBER, edge="#C46E1E", window=INK2, hub=PEACH, radius=0.25)
+FLAT_B_AMBER = dict(plate=AMBER, shell=INK, edge="#3A3532", window=PEACH, hub=INK, radius=0.25)
+# The drafts (flat-icon lane, 2026-11-11): A ships; the others were set aside.
+SETS["flat"] = [
+    ("A stroke", flat_a, T(), FLAT),
+    ("A trapezoid twin", flat_a, T(), dict(FLAT, bare_small=False, small_hub=HUB_R, small_k=1.15)),
+    ("A dot twin", flat_a, T(), dict(FLAT, small_hub=2.3, dots=True)),
+    ("B dark", flat_b, T(), FLAT_B_DARK),
+    ("B amber", flat_b, T(), FLAT_B_AMBER),
+    ("C dark", flat_a, T(), dict(FLAT, plate=INK, ink=AMBER)),
+]
+
+
 # The cart that shipped from D-094 to 0.3.0 (R2 "beams"), kept to compare.
 SETS["cart"] = [
     ("leadstinger", beams, ON_PLATE, R2),
     ("cart", plain_cart, GLYPH_FIT, dict(R2, plate=None)),
     ("cart-mono", plain_glyph, GLYPH_FIT, dict(plate=None, ink="#000000")),
 ]
-# What ships: draft C1 (D-257). The Linux icon (full plate), the macOS icon
-# (Apple's 824 px plate on 1024), each with its 16/32 px twin, and the cassette alone in
-# colour and in one colour; scripts/icons.sh exports them.
+# What ships: the flat cassette, draft A (D-259, amending D-257). The Linux icon (full plate),
+# the macOS icon (Apple's 824 px plate on 1024, D-129), each with its 16/32 px twin, and
+# the glyph alone in amber and in one colour; scripts/icons.sh exports them.
 MAC = (PX - 200) / PX          # Apple's plate, 824 of 1024 px
+GLYPH_ALONE = T(s=1.35)        # the glyph alone, its stroke just inside its canvas
 SETS["ship"] = [
-    ("leadstinger", c1_beams, ON_PLATE_C, CASSETTE),
-    ("macos", c1_beams, T(s=1.06 * MAC, dx=50 * MAC - 50, dy=50 * MAC - 50), dict(CASSETTE, inset=100)),
-    ("cassette", cassette_only, T(s=1.2), dict(CASSETTE, plate=None)),
-    ("cassette-mono", cassette_mono, T(s=1.2), dict(plate=None, ink="#000000")),
+    ("leadstinger", flat_a, T(), FLAT),
+    ("macos", flat_a, T(s=MAC, dx=50 * MAC - 50, dy=50 * MAC - 50), dict(FLAT, inset=100)),
+    ("cassette", flat_a, GLYPH_ALONE, dict(FLAT, plate=None, ink=AMBER)),
+    ("cassette-mono", flat_a, GLYPH_ALONE, dict(FLAT, plate=None, ink="#000000")),
 ]
 
 
@@ -885,7 +1000,7 @@ def script():
         draw(s, plate(s, fr, c), t, c)
         # The 16/32 px twin: the same pose a little bigger, details dropped.
         sc = dict(small[0] if small else c, small=True)
-        st = t if (t.s != 1 or SET in ("power", "ship", "cassette")) else T(math.degrees(t.a), 50, SMALL.cy, t.dx, t.dy, SMALL.s)
+        st = t if (t.s != 1 or SET in ("power", "ship", "cassette", "flat")) else T(math.degrees(t.a), 50, SMALL.cy, t.dx, t.dy, SMALL.s)
         fr = s.frame(None, name + " small", i * (PX + 96), PX + 96, PX, PX)
         draw(s, plate(s, fr, sc), st, sc)
     return s

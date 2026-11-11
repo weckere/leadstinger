@@ -1558,46 +1558,31 @@ pub fn app_icon() -> egui::IconData {
     egui::IconData { width: img.width(), height: img.height(), rgba: img.into_raw() }
 }
 
-/// The bars of the waveform along the top of the cassette's label (docs/design/logo.py
-/// `WAVES["bars"]`, D-128): each bar's height as a share of its greatest.
-const CASSETTE_WAVE: [f32; 11] = [0.42, 0.78, 1.00, 0.58, 0.90, 0.48, 0.74, 0.40, 0.60, 0.34, 0.26];
-
-/// The app's mark, a compact cassette (docs/design/logo.py, D-257), drawn to fit `rect`
-/// and centred in it. Its colours are the icon's, the same in every theme. Under 48 px
-/// wide it is the icon's small twin (the shell, the trapezoid, the window and two hubs);
-/// from there it has the label, the waveform along its top and the tape round the hubs.
+/// The app's mark, the app icon in small (docs/design/logo.py, D-257, D-259): an amber
+/// rounded square with the cassette drawn on it in dark strokes (the shell, two hub rings
+/// joined by the tape, the trapezoid), like QuipClipper's logo box beside its name. It is
+/// drawn as the largest square that fits `rect`, centred in it, in the icon's colours in
+/// every theme. Under 32 physical pixels (the toolbar's 24 points on a 1x screen) it is
+/// the icon's small twin: no trapezoid, bigger hubs and a heavier stroke.
 pub fn paint_cassette(p: &egui::Painter, rect: Rect) {
-    // The design's units: the shell spans x 10..90 and y 24..75.
-    let k = (rect.width() / 80.0).min(rect.height() / 51.0);
-    let o = rect.center() - vec2(50.0, 49.5) * k;
-    let at = |x: f32, y: f32| o + vec2(x, y) * k;
-    let r = |x0: f32, y0: f32, x1: f32, y1: f32| Rect::from_min_max(at(x0, y0), at(x1, y1));
-    let (edge, tape, ink) = (hex(0xC46E1E), hex(0x6A3E1E), hex(0x1E1E1E));
-    let small = k * 80.0 < 48.0;
-    p.rect_filled(r(10.0, 24.0, 90.0, 75.0), 4.5 * k, PANEL.amber);
-    let trapezoid = [at(29.0, 63.0), at(71.0, 63.0), at(76.0, 75.0), at(24.0, 75.0)];
-    p.add(egui::Shape::convex_polygon(trapezoid.to_vec(), edge, egui::Stroke::NONE));
-    let (hubs, hub_y, hub_r) = if small { ([35.0, 65.0], 46.5, 6.8) } else { ([36.5, 63.5], 47.0, 4.4) };
-    if small {
-        p.rect_filled(r(22.0, 34.0, 78.0, 59.0), 12.5 * k, ink);
-    } else {
-        p.rect_filled(r(15.0, 28.0, 85.0, 59.0), 2.6 * k, PANEL.peach);
-        // The waveform about y = 33.4, at most 4 above and below it, across x 20..80.
-        let pitch = 60.0 / CASSETTE_WAVE.len() as f32;
-        let w = pitch * 0.56;
-        for (i, a) in CASSETTE_WAVE.iter().enumerate() {
-            let (x, half) = (20.0 + (i as f32 + 0.5) * pitch, (a * 4.0).max(w / 2.0));
-            p.rect_filled(r(x - w / 2.0, 33.4 - half, x + w / 2.0, 33.4 + half), w / 2.0 * k, ink);
-        }
-        p.rect_filled(r(28.0, 39.0, 72.0, 55.0), 8.0 * k, ink);
-        p.circle_filled(at(hubs[0], hub_y), 7.4 * k, tape);
-        p.circle_filled(at(hubs[1], hub_y), 5.4 * k, tape);
+    let side = rect.width().min(rect.height());
+    let plate = Rect::from_center_size(rect.center(), vec2(side, side));
+    p.rect_filled(plate, side / 4.0, PANEL.amber);
+    // The glyph's 24-unit grid (the logo's G): 3.5 % of the side to a unit, about the middle.
+    let u = side * 0.035;
+    let at = |x: f32, y: f32| plate.center() + vec2(x - 12.0, y - 12.0) * u;
+    let small = side * p.pixels_per_point() < 32.0;
+    let stroke = egui::Stroke::new(side * 0.056 * if small { 1.3 } else { 1.0 }, hex(0x1E1E1E));
+    let shell = Rect::from_min_max(at(2.5, 5.0), at(21.5, 19.0));
+    p.rect_stroke(shell, 2.0 * u, stroke, egui::StrokeKind::Middle);
+    let hub_r = if small { 2.4 } else { 2.0 };
+    for x in [8.5, 15.5] {
+        p.circle_stroke(at(x, 11.0), hub_r * u, stroke);
     }
-    for x in hubs {
-        p.circle_filled(at(x, hub_y), hub_r * k, PANEL.peach);
-        if !small {
-            p.circle_filled(at(x, hub_y), 2.5 * k, ink);
-        }
+    p.line_segment([at(8.5 + hub_r, 11.0), at(15.5 - hub_r, 11.0)], stroke);
+    if !small {
+        let trapezoid = vec![at(6.6, 18.7), at(8.0, 15.75), at(16.0, 15.75), at(17.4, 18.7)];
+        p.add(egui::Shape::line(trapezoid, stroke));
     }
 }
 

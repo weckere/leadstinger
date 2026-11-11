@@ -6,6 +6,17 @@ All notable changes to LeadStinger. The format follows
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-11
+
+### Changed
+
+- **A simpler, flat icon.** The cassette has lost its flourishes: no beams, glow or
+  glints, no label or screws. It is now one dark line drawing of a cassette (the shell,
+  two reels joined by the tape, the trapezoid) on a plain amber square, in the same style
+  as QuipClipper's icon. 16 and 32 px icons drop the trapezoid and have bigger reels. The
+  mark beside the name in the toolbar is the icon in small. `assets/icons/cassette.svg`,
+  `cassette-{16,32,64}.png` and `cassette-mono.svg` are the line drawing alone.
+
 ## [0.3.1] - 2026-11-10
 
 ### Changed
@@ -892,7 +903,8 @@ The first public release.
   binds can fire clips from anywhere.
 - A Nix flake with a package, a dev shell, the NixOS module and a VM test.
 
-[Unreleased]: https://github.com/weckere/leadstinger/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/weckere/leadstinger/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/weckere/leadstinger/releases/tag/v0.3.2
 [0.3.1]: https://github.com/weckere/leadstinger/releases/tag/v0.3.1
 [0.3.0]: https://github.com/weckere/leadstinger/releases/tag/v0.3.0
 [0.2.1]: https://github.com/weckere/leadstinger/releases/tag/v0.2.1

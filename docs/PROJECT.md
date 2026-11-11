@@ -1963,6 +1963,14 @@ Each decision with its reasoning and the alternatives that were turned down.
 
 **Alternatives:** Ship recorded CC0 clips (adds binary files and licences); keep 12 tiles and only reshape them (no dialogue, which is what makes the gift board look real); rewrite the a11y tests for the 16/8 board (large churn in tests unrelated to this change); a third demo set (changes every 'set N of 2' label).
 
+### D-259: LeadStinger's icon is made flat, in QuipClipper's style (amends D-257): no beams, glow or glints, no label, waveform, screws or tape. A flat amber plate (#FF9C3A, LeadStinger's own orange, not QuipClipper's gold #F2B544, so two amber squares in the Dock differ in tone as well as glyph; corners a quarter of the side on Linux, Apple's 824-of-1024 plate on macOS per D-129) with the cassette as one dark stroke glyph (#1E1E1E, round caps and joins, stroke 5.6% of the side): the shell, two hub rings joined by the tape, the trapezoid. It is the shape of QuipClipper's #i-leadstinger symbol on its 24-unit grid (3.5 plate units a grid unit), so the two apps' cassettes are one drawing (draft A). The 16/32 px twin is kept: the shell and two bigger hub rings (r 2.4) with a 1.3x stroke and no trapezoid, which smears into the hubs below 32 px. The in-app mark beside the name is the icon in small (an amber rounded square with the glyph, 24 pt), like QuipClipper's logo box; under 32 physical px it draws the twin. The mark files cassette.svg/png (amber) and cassette-mono.svg (currentColor) are the glyph alone. docs/design/logo.py set 'flat' holds the drafts, 'ship' what ships.
+
+*2026-11-11*
+
+**Why:** The maintainer (2026-11-11): 'simplify the leadstinger icon, to look more like quipclipper.. we don't need the background flourishes'. Draft A is QuipClipper's recipe exactly, so it is the closest match; it still reads as a cassette at 32 px, and at 16 px as a box with two reels. The orange plate plus a different glyph tell it from QuipClipper's scissors at a glance (dock-pair render).
+
+**Alternatives:** A with the trapezoid kept in the 16/32 twin (muddy at 16 px: the trapezoid and hubs merge); A with filled hub dots in the twin (strong at 16 px, but at 32 px reads as a dumbbell, not a cassette); B dark (flat amber cassette with peach hubs on the dark plate: reads well but keeps D-257's look, not QuipClipper's); B amber (dark flat cassette on amber: heavy, and the peach window smears to grey at 16 px); C dark (A inverted, amber strokes on the dark plate: easiest to tell from QuipClipper but loses the amber-square family look the maintainer asked for); C solid (a dark filled glyph with the window cut out: busy, the cut-out fights the hub rings; dropped after the first render).
+
 18 decisions about private infrastructure and the gift edition are left out of the public snapshot: D-013, D-015, D-023, D-030, D-031, D-033, D-036, D-037, D-038, D-130, D-137, D-138, D-139, D-162, D-174, D-186, D-242, D-244.
 
 ## Tests
