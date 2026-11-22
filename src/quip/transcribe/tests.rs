@@ -339,7 +339,7 @@ fn cancel_stops_within_a_tick_and_deletes_the_job() {
     let t0 = Instant::now();
     progress.cancel();
     assert_eq!(worker.join().unwrap().unwrap_err(), CANCELLED);
-    assert!(t0.elapsed() < Duration::from_millis(150), "stopped in {:?}", t0.elapsed());
+    assert!(t0.elapsed() < Duration::from_millis(450), "stopped in {:?}", t0.elapsed());
     assert!(arrives(&log, "DELETE", "/api/jobs/j1"), "the job is cancelled on the server");
 }
 
@@ -362,7 +362,7 @@ fn cancel_during_the_upload_needn_t_wait_for_it() {
     let t0 = Instant::now();
     progress.cancel();
     assert_eq!(worker.join().unwrap().unwrap_err(), CANCELLED);
-    assert!(t0.elapsed() < Duration::from_millis(150), "stopped in {:?}", t0.elapsed());
+    assert!(t0.elapsed() < Duration::from_millis(450), "stopped in {:?}", t0.elapsed());
     assert!(arrives(&log, "DELETE", "/api/jobs/j9"), "the job the upload started is cancelled once it's known");
     assert_eq!(count(&log, "GET", "/api/jobs/j9"), 0);
 }

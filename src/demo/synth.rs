@@ -169,8 +169,10 @@ impl Mix {
     fn add(&mut self, at: f64, len: f64, mut f: impl FnMut(f64) -> f64) {
         let start = (at.max(0.0) * FS) as usize;
         let end = (((at + len) * FS) as usize).min(self.s.len());
-        for i in start..end {
-            self.s[i] += f((i - start) as f64 / FS);
+        if start < end {
+            for (i, s) in self.s[start..end].iter_mut().enumerate() {
+                *s += f(i as f64 / FS);
+            }
         }
     }
     /// Multiply everything by `f(t)`.
