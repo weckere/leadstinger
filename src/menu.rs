@@ -361,7 +361,7 @@ pub fn help(cmd: Cmd) -> &'static str {
         ("settings.gridLayout", Arg::Str("rows")) => "Each row holds the tiles put in it; a fuller row's tiles narrow to fit",
         ("settings.gridLayout", Arg::Str("auto")) => "As many columns as show every tile without scrolling; all tiles narrow together",
         ("settings.gridLayout", _) => "The set's column count, wrapping onto new rows",
-        ("view.search", _) => "Find tiles in every set by title or notes; Enter plays the first",
+        ("view.search", _) => "Find tiles in every set by title, file name, notes or titles; Enter goes to one",
         ("view.editor", _) => "Edit the selected tile's trim, vamp and markers on a big waveform you can zoom into",
         ("view.waveforms", _) => "Draw each tile's waveform on it",
         ("view.meters", _) => "Draw a level meter beside each playing tile's time",

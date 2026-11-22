@@ -44,6 +44,7 @@ clips instantly from a grid of tiles or a cue list. It runs natively on
   | vamp | a section inside the trim that loops until it's let go (**Play On**: the tile's next press, GO, or `tile.playOn`), then plays on to the end (theatre's "vamp until cue"; see "A vamp" below) |
   | picture | an optional image or icon drawn on the tile (see below) |
   | notes | the operator's notes for the cue ("standby: door slam"), shown in the cue list |
+  | subtitles | the lines spoken in the clip, with their times, as QuipClipper sends them or a transcription writes them (see "Subtitles" below) |
   | disabled | keys, pads, OSC, clicks and GO skip the tile; it draws dimmed and marked DISABLED. A playing tile plays on, a held one still stops on release, and Preview still plays it. `tile.enable` / `tile.disable` are bindable |
 
 - **Action tiles** play no audio. Instead, triggering one (a click, its key, a pad, OSC,
@@ -527,12 +528,36 @@ pulls the board down while it's there (D-127).
   - **Notes**: a cue with notes shows them on a second line of its row, and the next
     A set's own notes show above the list;
     they're edited in the set's settings in the inspector. Typing notes is one undo step.
-- **Find** (Cmd/Ctrl+F, `view.search`): a search box above the board. While it is
-  open the grid or list shows only the tiles whose title or notes contain the text,
-  from every set, the current set's first and then the others in sidebar order (no list
-  bar and no add slot; hovering a tile names its set). Enter plays the first hit and
-  closes the box; Esc in the box or its close button closes it. Clicking a hit plays it
-  as usual. Enter passes over disabled hits.
+- **Find** (D-263..D-266): a search box at the top of the window, always there.
+  - **Where.** Console: in the toolbar after the wordmark, a field where the counter
+    keeps its full width beside it, else a magnifier key that opens it; while it's in
+    use it is a field at any width, and Random and the meter give way to it (they come
+    back when it's empty and has left the keyboard). Panel: in a black gap cut into the
+    top bar before the title, with FIND and the shortcut as its hint; in a narrow window
+    the gap holds a magnifier, and while the box is in use the compact title gives way
+    to the field. Only the main window has it (set windows don't).
+  - **What it finds** (`tile.search`): a query is words; a tile is found when every
+    word appears somewhere in its title, the name of the file its audio was made from,
+    its notes or its subtitles (each line spoken in the clip), in any order, ignoring case and
+    accents ("cafe" finds "Café"). Every set is searched, the current set's tiles first
+    and then the others in sidebar order, each set in its own order.
+  - **What it shows.** Nothing on the board moves: the tiles of the shown set that the
+    search doesn't find are dimmed where they are, and still play as usual. While the box
+    has the keyboard, a list under it shows the hits from every set (up to 50): the
+    title, its set, and the line that found it when that wasn't the title ("Notes: …",
+    "File: …", "Subtitles: …"), each with a play key. Emptying the box puts the board back
+    exactly as it was.
+  - **Keys in the box**: typing never plays a tile or fires a key binding; Up and Down
+    choose a hit; Enter goes to it (its set comes up, the tile is selected, scrolled into
+    view and given the keyboard, so a second Enter plays it; the box empties);
+    Cmd/Ctrl+Enter plays it and keeps the search; Esc empties the box and gives the
+    keyboard back to the board (to the selected tile when it's in the shown set). Esc
+    there is never Stop All. A click on a hit goes to it; its play key plays it. Going
+    to a tile and playing one never stop anything.
+  - **Keys to it**: Cmd/Ctrl+F (View ▸ Find…, `view.search`) puts the keyboard in the
+    box. `view.search` also sets its text (`query`), empties it (`clear`), goes to or
+    plays hit `index` (`go`, `play`; `play` without an index plays the first hit that can
+    play, passing over disabled and empty ones).
 - **No modes** (M22, D-147): clicking a tile selects it for the inspector, and a
   **double-click plays it**, as a press of its key would: the second press is the press,
   so a Hold tile plays while that second press is held and stops when it's let go.
@@ -579,7 +604,9 @@ pulls the board down while it's there (D-127).
   list, Esc, Shift+Esc and Space work as everywhere. The menus, the Setlist, the
   Inspector, Settings and the other windows stay in the main window; menu commands,
   MIDI, OSC, global keys and the CLI act on the main window's current set as before, and
-  one audio engine plays for every window. A set with a window of its own has a window
+  one audio engine plays for every window. Undo and Redo are one history for every
+  window, and a step made or undone in a set window never changes the main window's
+  current set. A set with a window of its own has a window
   mark beside its name in the setlist (its hover text and screen-reader label say "open
   in a window of its own"), and View ▸ Open Set in New Window is checked while the
   current set has one (choosing it then raises the window). A set can have one window;
@@ -648,8 +675,8 @@ pulls the board down while it's there (D-127).
   rectangle from it. Cmd/Ctrl-Shift-click adds the rectangle to the selection (its
   corner is the tile last Cmd/Ctrl-clicked). Neither plays anything. `view.select
   --remove` is Alt-click from the CLI. In Auto and Fixed
-  columns the rectangle follows the columns shown; in the cue list (one column) and
-  among search hits it's the run in set order. `view.select --range` (with `--add`,
+  columns the rectangle follows the columns shown; in the cue list (one column) it's
+  the run in set order. `view.select --range` (with `--add`,
   and `--columns` for lines of that many) does it from the CLI. With several selected, the
   inspector shows the settings they can share (colour, the pad options,
   volume, gain, speed, fades, fade shape, ducking, and a bed's Duck to when every
@@ -793,7 +820,7 @@ pulls the board down while it's there (D-127).
   - E: show or hide the inspector
   - B: show or hide the setlist (the sidebar)
   - 1 and 2: Grid and List view
-  - F: find tiles
+  - F: find tiles (the search box)
   - ] and [: next and previous set (in sidebar order; they stop at the last and first)
   - . (period): Stop All
 
@@ -802,7 +829,7 @@ pulls the board down while it's there (D-127).
 - **Hover text** on every control, the in-window menus included: what it does, in plain
   words, then its keys after a dash ("Stop everything that's playing — Esc fades out…").
   A control that is unavailable says what makes it available. A tile's hover text is a
-  card: its title (and set, in search), how it plays, its key and length, where it plays
+  card: its title, how it plays, its key and length, where it plays
   (its sends), what starts the next cue, whether it's disabled, its notes, and what a
   click does. Screen readers read the hover text as the control's description.
 - **Screen readers** (VoiceOver on macOS, Orca on Linux through AT-SPI, via AccessKit):
@@ -813,7 +840,7 @@ pulls the board down while it's there (D-127).
   pads, OSC and the cue list use) (or
   its length when stopped, "waiting, starts in…", "paused", "fading out", "playing,
   vamping, the next press plays on, …", "playing on, … left", "disabled",
-  "no sound", the set it's in for a search hit, and "loops", "solo" or "vamp" when its
+  "no sound", and "loops", "solo" or "vamp" when its
   badge says so); a cue row starts "Cue 3, …" and adds
   "next cue" (a Queued list's waiting cue), "played", its notes and its link. Tiles and
   rows read selected or not; set rows read "Game Night, set 1 of 2, 14 tiles, playing, locked"; the bottom
@@ -1019,9 +1046,263 @@ an imported message that doesn't read is skipped.
 Edit ▸ Undo and Redo (and `edit.undo` / `edit.redo`) step back and forward through
 changes to sets and tiles: adding, removing, moving, duplicating and importing, every
 tile setting, pictures, renaming and deleting sets. One slider drag or one typed title
-is one step. Settings, the master volume, the layout, the view and playback aren't
+is one step, and so is a whole script (`leadstinger-cli run`, `batch.run`), labelled
+Script. Settings, the master volume, the layout, the view and playback aren't
 undone. The last 50 steps are kept while the app runs; a clip a step still needs stays
 in the library folder until no step does.
+
+A script that fails part-way is put back: its changes to sets and tiles go, as if undone,
+and no step is recorded (unless it was run with `--keep-going`, which keeps the steps that
+worked). A dry run (`run --dry-run`, `batch.run {dryRun}`) reports what a script would
+change to sets and tiles and changes nothing; it refuses what putting them back couldn't
+undo (imports, recordings, playback, settings).
+
+## Subtitles
+
+A tile can keep its clip's **subtitles** (D-260): every line spoken in the audio, each
+with its start and end in seconds into the sound file, its text (which may have two rows),
+and, when the source had them, each word's start and end. They also record where they came
+from (`kind` such as `srt`, `lang`, and whatever else the source said). "Titles" in
+conversation; "subtitles" in the app, so they are never confused with the tile's title.
+
+- **Where they come from.** QuipClipper sends them with a clip (its `cues`, `words` and
+  `cues_source`, docs/QUIPCLIPPER.md): `quip.add` and the QuipClipper window read them from
+  the clip's listing; a `leadstinger://quip` link carries none, so LeadStinger reads the
+  clip's entry from the server's listing once the tile is made (on a thread with a window,
+  filling the tile when the answer comes). A set file carries them per tile. Scripts set
+  them with `tile.subtitlesSet`.
+- **Kept in file time.** The times are in the sound file, like markers and the trim, so
+  trimming, speed and pitch never change them. A line outside the trim is kept and shown
+  dimmed: a wider trim plays it again.
+- **What follows them** (D-262). Duplicate, Copy (Alt-drag) and set files carry them, since
+  the copy plays the same sound. Replace Audio and recording into the tile remove them and
+  their source: they described the old sound. Undo brings them back.
+- **Hand alignment** (D-261). A line whose words were placed by hand (in the waveform
+  editor, below) is marked `aligned`. A new copy of the subtitles from the source keeps such a
+  line wherever its text matches a new line within a second of it, so a re-import never
+  undoes the work. A line whose text was changed in the editor (a spelling fixed) is kept
+  in place of the new line whose start and end match its kept source timing within 50 ms,
+  aligned or not (D-273). A line added in the editor is marked `added` (D-300) and
+  always kept: it stands in for a new line only when their text matches within a second,
+  never by its timing. Transcription merges the same way. `tile.subtitlesSet --keepAligned
+  false` replaces everything.
+- **Reading leniently.** A line needs a start before its end (seconds, not negative) and
+  some text; a word the same. Anything else, and repeats of a line, is skipped and the
+  import says how many ("Subtitles for “…”: skipped 1 subtitle line it couldn't read");
+  nothing fails over them, and the tile always comes in. Lines are put in time order;
+  overlapping lines are kept. At most 2000 lines of 500 characters with 200 words each; a
+  longer line is cut short with "…".
+- **The inspector** shows them on the Sound tab under SUBTITLES, with the source ("SRT ·
+  en"; machine-made ones "Machine-made · whisper.cpp · base.en · en", and "words by
+  whisper.cpp" when an engine timed known text) and each line beside its start time; the
+  footer's sound line ends "4 subtitles". A tile with a sound but no subtitles says "None
+  yet" beside the Transcribe button.
+- **Commands.** `tile.subtitles` reads a tile's lines as JSON (with how many are heard
+  inside the trim); `tile.subtitlesSet` sets them from JSON (one undo step);
+  `tile.subtitlesClear` removes them (one undo step). `tile.get` and `tile.list` give the
+  count as `subtitles`.
+
+### Aligning words in the editor
+
+The waveform editor shows a tile's subtitles in a **lane across the top of the waveform**,
+under the time ruler (D-267, D-275), on the same time axis at every zoom; a tile without
+subtitles has no lane, and the trim handles start under it.
+
+- **What it shows.** Each line is a bar along the lane's top. Once a line has room for
+  about 16 points a word, each word is a block with its text; further out the line shows
+  its text in one block. A line without word timings shows its words spread over it by
+  length (the even split) as **dashed** blocks, a guess; words that came with the
+  subtitles are filled in the tile's colour; words placed by hand are **yellow** (the trim
+  colour). A word's label starts where its block comes into view. Lines outside the trim
+  are dimmed. While the tile plays, the playhead crosses the lane and the line and word
+  being spoken are marked in the playhead's colour. **Onsets**, where a sound rises out of
+  quiet, are short ticks along the lane's bottom, pointing into the waveform.
+- **Guide lines** (D-275). The selected word's start and end run down through the whole
+  waveform in green over a dark halo, so an edge can be lined up with the sound by eye:
+  the edge the arrow keys move is solid with a tag ("start", "end"), the other dashed
+  (both solid when the whole word moves). While an edge, word or line is dragged, its
+  edges are drawn instead.
+- **Dragging** (D-268). A word's start or end edge, the whole word, or a line's bar (all
+  its words) can be dragged. An edge shared by two words moves both; Shift leaves the
+  neighbour where it is (opening a gap, or stopping at it). Words keep their order, never
+  overlap and are never shorter than 20 ms; a word moved whole takes its shared
+  neighbours' edges along and stops at gaps. A line's start and end follow its first and
+  last word, and nothing leaves the audio. A drag shows where it's going and changes the
+  tile when it ends: one undo step. Anything moved marks the line `aligned`; a line moved
+  past another takes its place in time order.
+- **Snapping.** With Snap on, a dragged edge, word or line lands on the onset within
+  7 points (14 on a touch screen); Alt drags without snapping. The onsets are found
+  from the decoded audio when the lane first shows: its loudness every 5 ms, a rise of
+  9 dB within 30 ms, louder than −55 dBFS and no more than 30 dB under the loudest point
+  within a second; the onset is where the rise first passes 3 dB, at least 60 ms after
+  the last one. The same audio always gives the same onsets.
+- **The keyboard** (D-274). A click on a word (or on its edge, or a drag) selects it and
+  gives it the keyboard at once; Tab goes from word to word in time order. The selected
+  word has a **grip**, what the arrows move: its start (the default), the whole word or
+  its end. **Left/Right** move the grip 10 ms (Shift: 100 ms); **Up/Down** step through
+  start, word and end; a click on an edge picks that edge. **Enter** starts the word at
+  the playhead (or the cursor when nothing plays; the whole word moves when that is past
+  its end) and selects the next word, so a line can be tapped in while it plays. A
+  focused word keeps these keys from the board: no pad plays and the selection stays.
+- **Lines** (D-302). A click on a line's bar selects the line (its first word) and gives
+  the line the keyboard, shown by a ring on the bar; Tab stops on each bar too.
+  **Left/Right** move the whole line 10 ms (Shift: 100 ms) and **Delete** or
+  **Backspace** delete it, the next line taking the keyboard. A focused bar keeps these
+  keys from the board.
+- **Adding a line** (D-301). The tools end with a New line field and Add Line: type
+  what's said and press Enter (or click Add Line). It goes over the waveform's selection;
+  without one, from the playhead (or the cursor when nothing plays), lasting about 0.3 s
+  a word (0.8 to 6 s) but stopping before the next line that leaves its words room, and
+  never past the audio. Add Line is greyed, with the reason on hover, until there is text
+  and a place for it. Its words start on the onsets inside it (the Auto-Align rule, from
+  its start on), or are spread evenly when there are too few: a suggestion, not
+  `aligned`. The new line is marked `added`, has no source timing to reset to until it is
+  first changed, and becomes the selection. The tools say "added here" for it.
+- **The tools** under the editor's buttons, for the selected word: its text, typed over (a
+  space splits it, its time shared by length); the grip as a three-way toggle (start,
+  word, end) with the keys beside it; Start at Playhead (as Enter); Join Next;
+  Auto-Align; Reset Line; Split Again; Delete Line; and the line's text, which, changed (a " / " is a
+  line break), or with Split Again, drops the line's word timings so it shows the even
+  split again. A line without word timings keeps none when a word is retyped, split or
+  joined: only its text changes.
+- **Icons** (D-276). The editor's actions are small icon buttons with their names on hover
+  and for screen readers: at the cursor, Add Marker, Start Here and End Here (Reset Trim
+  in words); for the selection, Trim to Selection, Vamp Selection, Play Selection (Stop
+  while it plays) and Clear Selection; for subtitles, the grip toggle, Start at Playhead,
+  Join Next, Reset Line, Split Again, Delete Line and Add Line (Auto-Align in words). The glyphs are drawn in
+  code, in the theme's button colours.
+- **Auto-align** (D-269) is a suggestion: each word starts on an onset inside the line
+  (from 100 ms before its start), running to the next word's start. With more onsets than
+  words it uses the first and the strongest rises of the rest; with fewer it falls back to
+  the even split. The line is not marked `aligned`, so a new copy from the source replaces
+  it unless a word is then moved by hand.
+- **Reset** (D-270). The first change to a line keeps its timing as the source gave it in
+  `source_timing` (a LeadStinger field); Reset Line puts that back and clears `aligned`.
+  Set files and libraries carry it, so Reset still works after an export and import.
+- **Locked.** In a locked set the lane shows but nothing in it responds, and the tools
+  (Add Line and Delete Line too) are greyed; the commands are refused.
+- **Touch.** On a touch screen the lane is taller and the edge handles are 22 points wide;
+  the drags are the same, with one finger.
+- **Commands** (all one undo step, lines and words numbered from 1, each returning the
+  line): `tile.subtitleNudge {line, word, grip, by}` (the arrow keys),
+  `tile.subtitleEdge {line, word, edge, at, split?}`, `tile.subtitleWordMove
+  {line, word, at | by, split?}`, `tile.subtitleTap {line, word, at}`,
+  `tile.subtitleLineMove {line, at | by}`, `tile.subtitleAutoAlign {line}`,
+  `tile.subtitleReset {line}`, `tile.subtitleWordText {line, word, text}`,
+  `tile.subtitleWordJoin {line, word}`, `tile.subtitleText {line, text?}`,
+  `tile.subtitleAdd {text, start, end | at, words?: onsets|even}` and
+  `tile.subtitleDelete {line}` (which returns what it removed). The
+  selected word and its grip are `view.editorWord {line, word, grip?}` (the running app,
+  no undo).
+
+### Transcription
+
+A tile's subtitles can also come from **transcription** (D-277 to D-285): an engine listens
+to the sound and writes what it hears. It runs **only when asked**, never on import.
+
+- **Engines.** whisper.cpp's `whisper-cli` (D-278): an optional program installed
+  separately with a ggml model file the user chooses (Settings ▸ Subtitles, or
+  `LEADSTINGER_WHISPER_MODEL`), found like ffmpeg (`LEADSTINGER_WHISPER`, then
+  `whisper-cli` or `whisper-cpp` on PATH, then the usual install folders). Nothing is
+  compiled in, nothing is downloaded, and the audio never leaves the computer. On macOS
+  and iPadOS, **Apple Speech** (D-286 to D-289): the system's own recogniser
+  (`SFSpeechRecognizer` on the file), **on the device only** (D-287: every request
+  requires on-device recognition; a language with no on-device model is refused with a
+  sentence saying so, never sent to Apple's servers). It needs Speech Recognition
+  permission, and **nothing asks for it by surprise** (D-288): Settings ▸ Subtitles shows
+  "Allow Speech Recognition…" (`transcribe.allowSpeech`), the only thing that shows the
+  system's prompt; until permission is given the engine says what to do (the button;
+  when denied, System Settings ▸ Privacy & Security ▸ Speech Recognition; when restricted,
+  that Screen Time or a profile stops it) and `auto` moves on to the next engine. It runs
+  **only in the app** (D-289): a program that isn't its app bundle's own executable
+  (`cargo run`, the Nix build, `leadstinger-cli --offline`) reports it unavailable and why;
+  `leadstinger-cli` without `--offline` hands the command to the open app, which uses it.
+  Sound over 50 s is recognised in pieces cut at the quietest place in each piece's last
+  10 s; the recogniser's words become lines at sentence ends, at pauses of 0.7 s or more,
+  and when a line passes about 5 s or 12 words (at its next comma or short pause; at the
+  latest 7 s or 16 words). Settings ▸ Subtitles names the language it will use (the
+  language setting, else the system's) and whether that language is recognised on the
+  device. A connected **QuipClipper** server (D-290): the tile's audio is sent to it
+  (docs/QUIPCLIPPER.md, "Transcription") and it sends back lines with their words; it
+  keeps nothing. The engine setting is
+  `auto` (the first that can run: Apple Speech, whisper-cli, QuipClipper; D-279) or one
+  engine; the language is a code (`en`), or the engine's own (English for an English-only
+  model). When no engine can run, the action says why and what to install, as a missing
+  ffmpeg does.
+- **Which QuipClipper** (D-291, D-292). It's offered only for a connected server whose
+  `/api/config` says `transcribe.upload` is an object (its caps, `{max_bytes,
+  max_seconds}`). That answer is kept, not asked for every frame: a server is asked when
+  Settings opens, when it's connected, after a call to it failed, and by a command that
+  needs it before it was asked (which waits up to a few seconds). With several that
+  transcribe, the one chosen in Settings ▸ Subtitles (`quipServer`) is used, else the
+  first by address; a chosen server that can't transcribe says why rather than passing to
+  another. Settings names the server that will be used, why that one, and why each other
+  can't.
+- **Sent off the computer, said first** (D-293). Wherever the window names the engine
+  before a run with QuipClipper (the set's confirmation, the Transcribe tooltip, Settings,
+  the notice as it starts) it says that the audio is sent to that server, by name. A
+  sound over the server's caps is refused before anything is sent.
+- **What the engine is given.** The tile's whole sound (or, for one line, the line and
+  half a second either side), mixed to mono and resampled to 16 kHz WAV (D-285); its
+  times come back in seconds into the file, whatever the trim.
+- **Words on their sounds** (D-281). Each heard word's start moves to the nearest place a
+  sound starts (the editor's onset finder), up to 0.15 s earlier or 0.05 s later, keeping
+  the words in order and at least 20 ms long. These lines are not marked aligned: that
+  stays for hand work.
+- **What it does to the tile** (D-280). A tile with no subtitles, or only machine-made
+  ones, takes the lines heard, marked machine-made (`{kind: machine, engine, model,
+  lang}`, QuipClipper's shape); lines aligned by hand stay, as on a re-import. A tile with
+  subtitles from elsewhere **keeps its text**: its lines without word timings take
+  timings from what was heard (D-282: the known words are matched with the heard ones
+  ignoring case, accents and punctuation; each matched or misheard word takes the heard
+  word's time, the others are spread between by length; a line where no word was heard as
+  itself is left alone), and the source notes which engine timed the words. Reset Line
+  puts a line's old timing back. Its text is never changed.
+- **Lines heard in the gaps** (D-296..D-299). On a tile with subtitles from elsewhere,
+  `tile.transcribe` also adds what the engine heard where none of the tile's lines is
+  spoken, as QuipClipper's gap mode does (on by default; `gaps: false` only times the
+  known words, and then a tile whose lines all have word timings is skipped). The heard
+  words that fall in one gap, from one heard line, become a new line, its words refined
+  onto their sounds like other machine lines, marked on the line itself as machine-made
+  (`machine: {kind: machine, engine, model, lang}`; QuipClipper's `machine: true` reads
+  the same) and never `aligned`. A gap is a stretch of at least 0.5 s between two known
+  lines, or before the first or after the last. A heard word belongs to a known line, and
+  is left out, when its middle is inside that line, or just outside it (within 0.25 s)
+  and it is the line's first or last word heard early or late; heard words the known
+  words took their times from are left out too. Any other word reaching over a gap's edge
+  is cut at it, so no gap line overlaps a known line or another gap line. Transcribing
+  again replaces the gap lines it added before, so nothing is doubled; a gap line a
+  person has changed since (placed by hand, or changed in the editor so it keeps its old
+  timing) stays as it is and counts as a known line. A gap line whose text is retyped in
+  the editor becomes the person's own line (D-303): it loses its machine mark and counts
+  as a line added in the editor, so transcription and a new copy both keep it. A new copy of the subtitles from
+  their source keeps the gap lines that no new line overlaps. The tile's own lines and
+  `cues_source` are untouched by all this, and the whole result is one undo step.
+  `set.transcribe` does the same for the set's tiles with subtitles from elsewhere when
+  asked (`gaps: true`, or the confirmation's "Also listen to the N tiles that have
+  subtitles" box, off by default).
+- **Running** (D-283). Tiles are transcribed one at a time in the background; the tile
+  says "Queued" or "Transcribing 45%" where its length is, and the status bar shows which
+  and how many wait, with Cancel. Each tile's result lands as its own undo step,
+  "Transcribe", with a notice; a tile removed, or a set locked, meanwhile is left as it
+  is. Locked sets refuse transcription.
+- **Where** (D-284). Transcribe beside SUBTITLES in the inspector's Sound tab and in the
+  waveform editor's SUBTITLES row; Transcribe in a tile's menu (every selected tile when
+  it is one of them); Transcribe Tiles Without Subtitles… in a set's menu, which asks
+  first, naming the engine and how many tiles, with a box to also fill the gaps of its
+  tiles that have subtitles; Align Words for the selected line in the
+  editor, which hears that line again and times its words from its text; Settings ▸
+  Subtitles for the engine, the language and whisper-cli's model, with whether each
+  engine is ready (and, on macOS and iPadOS, Apple Speech's language and the Allow
+  Speech Recognition… button while permission hasn't been asked).
+- **Commands.** `tile.transcribe {tile | tiles, engine?, lang?, gaps?}`, `set.transcribe
+  {set?, ask?, gaps?}`, `tile.alignWords {tile, line?}` (each → a job), `transcribe.status {job?}`,
+  `transcribe.cancel {job?}`, `transcribe.engines` (with Apple Speech's permission,
+  locale and whether it's on the device; reading it never prompts),
+  `transcribe.allowSpeech` and `settings.transcribe {engine?, lang?,
+  whisperModel?, quipServer?}`. `leadstinger-cli` waits for a job and prints what each tile got:
+  how many lines and words were heard, how many known words were matched, and how far the
+  words were moved onto their sounds.
 
 ## Getting sounds in
 
@@ -1076,6 +1357,7 @@ in the library folder until no step does.
   `<server>/api/clips/download/<clip>` into a new tile at the end of the named set
   (created if missing) or the current one. The tile is titled from the link (default:
   the clip's file name) and trimmed to `start`–`end`, the line inside the clip's handles.
+  Its subtitles come from the clip's entry in the server's listing ("Subtitles" above).
   It appears at once showing "Downloading 34%", the download runs on the import thread
   and Cancel Import stops it; a clip in a video container or AC-3/DTS then goes through
   ffmpeg. One undo step. The link is parsed strictly: an unknown or repeated parameter,

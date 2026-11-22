@@ -124,6 +124,34 @@ pub struct Meta {
     /// Sets: the set's name and its tiles.
     pub name: Option<String>,
     pub items: Option<Vec<Value>>,
+    /// Every subtitle line the clip holds, `[{start, end, text, words?}]` in seconds into
+    /// the clip (D-260); kept as JSON and read leniently ([`Clip::subtitles`]).
+    pub cues: Option<Value>,
+    pub cues_source: Option<Value>,
+}
+
+/// The subtitles a clip's sidecar carries, read for a tile.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ClipSubtitles {
+    pub parsed: crate::subtitles::Parsed,
+    pub source: Option<crate::subtitles::SubtitleSource>,
+}
+
+impl ClipSubtitles {
+    /// Put them on a tile that is being imported, keeping lines aligned there by hand
+    /// (D-261). Returns what was skipped, for the import's notice ("Subtitles for “…”:
+    /// skipped 1 subtitle line it couldn't read"). Nothing when the tile is gone.
+    pub fn apply(self, c: &mut Controller, tile: Uuid) -> Option<String> {
+        let t = c.store.library.tile_mut(tile)?;
+        let title = t.title.clone();
+        if !self.parsed.lines.is_empty() {
+            let (lines, _) = crate::subtitles::merge(&t.subtitles, self.parsed.lines.clone());
+            t.subtitles = lines;
+            t.subtitles_source = self.source;
+            c.store.mark_dirty();
+        }
+        self.parsed.problem().map(|p| format!("Subtitles for “{title}”: {p}"))
+    }
 }
 
 /// One entry of the listing.
@@ -293,6 +321,14 @@ impl Clip {
         (s.is_finite() && e.is_finite() && s >= 0.0 && e > s && e <= 86_400.0).then_some((s, e))
     }
 
+    /// The subtitles in its sidecar (none for an old clip).
+    pub fn subtitles(&self) -> ClipSubtitles {
+        let m = self.meta();
+        let parsed = m.cues.as_ref().map(crate::subtitles::parse_lines).unwrap_or_default();
+        let source = m.cues_source.as_ref().and_then(crate::subtitles::parse_source).filter(|_| !parsed.lines.is_empty());
+        ClipSubtitles { parsed, source }
+    }
+
     /// The tile's notes: where the line is from, when in the source, and that it came
     /// from QuipClipper.
     pub fn notes(&self) -> String {
@@ -312,7 +348,7 @@ impl Clip {
             "clip": self.clip, "kind": self.kind, "title": self.display_title(), "source": self.source_text(),
             "episode": self.episode_code(), "duration": self.duration(), "channels": self.channels(),
             "trim": self.trim().map(|(s, e)| json!({"start": s, "end": e})), "size": self.size, "modified": self.modified,
-            "flac": self.flac_url.is_some(),
+            "flac": self.flac_url.is_some(), "subtitles": self.subtitles().parsed.lines.len(),
         })
     }
 }
@@ -508,6 +544,8 @@ fn fetch_bytes(url: &str, token: &str, server: &str, clip: &str) -> Result<Vec<u
 pub struct Jobs {
     preview: Option<PreviewJob>,
     sets: Vec<SetJob>,
+    /// Sidecars fetched for tiles a link imported, for their subtitles.
+    subtitles: Vec<SubtitlesJob>,
     /// The clip last previewed, while its voice may still be sounding.
     previewing: Option<String>,
 }
@@ -516,6 +554,11 @@ struct PreviewJob {
     clip: String,
     title: String,
     rx: Receiver<Result<DecodedAudio, String>>,
+}
+
+struct SubtitlesJob {
+    tile: Uuid,
+    rx: Receiver<Result<ClipSubtitles, String>>,
 }
 
 struct SetJob {
@@ -589,6 +632,25 @@ pub fn poll(c: &mut Controller) {
         }
     }
     let mut i = 0;
+    while i < c.quip_jobs.subtitles.len() {
+        match c.quip_jobs.subtitles[i].rx.try_recv() {
+            Err(TryRecvError::Empty) => i += 1,
+            done => {
+                let job = c.quip_jobs.subtitles.remove(i);
+                match done {
+                    Ok(Ok(subs)) => {
+                        if let Some(p) = subs.apply(c, job.tile) {
+                            c.notify(p);
+                        }
+                    }
+                    // Only the subtitles are missing; the clip's own download reports its errors.
+                    Ok(Err(e)) => eprintln!("{}: no subtitles for the clip: {e}", crate::brand::SLUG),
+                    Err(_) => {}
+                }
+            }
+        }
+    }
+    let mut i = 0;
     while i < c.quip_jobs.sets.len() {
         let done = match c.quip_jobs.sets[i].rx.try_recv() {
             Ok(r) => Some(r),
@@ -605,6 +667,29 @@ pub fn poll(c: &mut Controller) {
         }
         std::fs::remove_file(&job.file).ok();
     }
+}
+
+/// A link names a clip but carries none of its sidecar: read the sidecar from the server
+/// for the tile's subtitles, on a thread when there's a window (the controller fills the
+/// tile when it's done), else at once, returning what was skipped. A server or clip
+/// without them leaves the tile be.
+pub(crate) fn fetch_subtitles(c: &mut Controller, server: &str, token: &str, clip: &str, tile: Uuid) -> Option<String> {
+    let (server, token, clip) = (server.to_owned(), token.to_owned(), clip.to_owned());
+    let work = move || find(&server, &token, &clip).map(|e| e.subtitles());
+    if !c.has_window {
+        return match work() {
+            Ok(subs) => subs.apply(c, tile),
+            Err(e) => {
+                eprintln!("{}: no subtitles for the clip: {e}", crate::brand::SLUG);
+                None
+            }
+        };
+    }
+    match spawn("quip-subtitles", work) {
+        Ok(rx) => c.quip_jobs.subtitles.push(SubtitlesJob { tile, rx }),
+        Err(e) => eprintln!("{}: no subtitles for the clip: {e}", crate::brand::SLUG),
+    }
+    None
 }
 
 fn import_set(c: &mut Controller, file: &Path) -> Result<(), String> {
@@ -748,7 +833,7 @@ fn add(c: &mut Controller, data_dir: &Path, server: &str, token: &str, id: &str,
             };
             let (start, end) = entry.trim().unzip();
             let link = Link { server: server.to_owned(), clip: entry.clip.clone(), title: Some(title), start, end, set, flac: entry.flac_url.is_some() };
-            super::start_import(c, data_dir, link, Some(entry.notes()), false)
+            super::start_import(c, data_dir, link, Some(entry.notes()), Some(entry.subtitles()), false)
         }
         _ => Err(bad(format!("“{}” has no sound to add (a {})", entry.display_title(), entry.kind))),
     }
@@ -897,7 +982,14 @@ pub(crate) mod tests {
             let fresh = headers.iter().any(|h| h.eq_ignore_ascii_case("if-none-match: \"e1\""));
             let entry = json!({"name": "line.wav", "clip": "Heat/line.wav", "kind": "audio", "folder": "Heat", "flac_url": "/api/clips/download/Heat/line.wav?as=flac",
                 "download_url": "https://elsewhere.example/clips/Heat/line.wav",
-                "meta": {"cue": "Don't let yourself get attached", "trim": {"start": 0.5, "end": 1.5}, "duration": 2.0, "channels": 6, "jellyfin": {"show": "Heat", "title": "Heat", "year": 1995}}});
+                "meta": {"cue": "Don't let yourself get attached", "trim": {"start": 0.5, "end": 1.5}, "duration": 2.0, "channels": 6, "jellyfin": {"show": "Heat", "title": "Heat", "year": 1995},
+                    // Out of order, one with word timings, one that can't be read.
+                    "cues": [
+                        {"start": 0.6, "end": 1.6, "text": "Don't let yourself get attached", "words": [{"start": 0.6, "end": 0.8, "text": "Don't"}, {"start": 0.8, "end": 0.9, "text": "let"}]},
+                        {"start": 0.1, "end": 0.55, "text": "Whew."},
+                        {"start": "soon", "text": "Broken"}
+                    ],
+                    "cues_source": {"kind": "srt", "lang": "en", "file": "Heat.en.srt"}}});
             let path = req.split(' ').nth(1).unwrap_or_default();
             match path {
                 p if p.starts_with("/api/clips?") && p.contains("since=v1.100") => response("200 OK", "ETag: \"e2\"\r\n", &serde_json::to_vec(&json!({"contract": CONTRACT, "clips": [entry], "cursor": "v1.200"})).unwrap()),
@@ -1064,6 +1156,8 @@ pub(crate) mod tests {
         let t = c.store.library.tile(id).unwrap();
         assert_eq!((t.title.as_str(), t.start, t.end), ("Don't let yourself get attached", 0.5, Some(1.5)));
         assert_eq!(t.notes, "Heat (1995) · QuipClipper");
+        assert_subtitles(t);
+        assert!(c.notice.as_ref().is_some_and(|n| n.text.contains("skipped 1 subtitle line")), "{:?}", c.notice.as_ref().map(|n| &n.text));
         assert!(matches!(c.store.media(t), Some(crate::store::Media::Ready { .. })));
         let seen = hits.lock().unwrap().clone();
         assert!(seen.iter().any(|h| h.contains("/api/clips/download/Heat/line.wav?as=flac")), "{seen:?}");
@@ -1079,6 +1173,48 @@ pub(crate) mod tests {
         assert!(!std::fs::read_dir(&c.store.data_dir).unwrap().flatten().any(|e| e.file_name().to_string_lossy().ends_with(".lsset")), "the download is removed");
         let e = c.execute("quip.add", json!({"clip": "Heat/missing.wav"})).unwrap_err();
         assert_eq!(e.code, "not_found");
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// The mock's line, with its subtitles from the sidecar: in time order, the bad one
+    /// skipped, words kept.
+    fn assert_subtitles(t: &Tile) {
+        let texts: Vec<&str> = t.subtitles.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, ["Whew.", "Don't let yourself get attached"]);
+        assert_eq!(t.subtitles[1].words.len(), 2);
+        assert!(!t.subtitles[1].aligned, "the source's words aren't hand-aligned");
+        let src = t.subtitles_source.as_ref().unwrap();
+        assert_eq!((src.kind.as_str(), src.lang.as_deref(), &src.extra["file"]), ("srt", Some("en"), &json!("Heat.en.srt")));
+    }
+
+    #[test]
+    fn links_bring_the_clips_subtitles_from_its_sidecar() {
+        let hits = Arc::new(Mutex::new(Vec::new()));
+        let base = mock(hits.clone());
+        let (mut c, root) = controller();
+        c.execute("quip.connect", json!({"url": base, "token": "tok", "check": false})).unwrap();
+        let link = Link { server: base.clone(), clip: "Heat/line.wav".into(), title: Some("Attached".into()), start: Some(0.5), end: Some(1.5), set: None, flac: true }.to_link();
+        // No window: the sidecar is read at once.
+        c.has_window = false;
+        let r = c.execute("quip.import", json!({"link": link})).unwrap();
+        let id: Uuid = serde_json::from_value(r["tile"].clone()).unwrap();
+        assert_subtitles(c.store.library.tile(id).unwrap());
+        assert!(c.notice.as_ref().is_some_and(|n| n.text.ends_with("Subtitles for “Attached”: skipped 1 subtitle line it couldn't read")), "{:?}", c.notice.as_ref().map(|n| &n.text));
+        // A window: read on a thread, the tile filled when it comes.
+        c.has_window = true;
+        let r = c.execute("quip.import", json!({"link": link})).unwrap();
+        let id: Uuid = serde_json::from_value(r["tile"].clone()).unwrap();
+        wait(&mut c, |c| c.store.library.tile(id).is_some_and(|t| !t.subtitles.is_empty()));
+        assert_subtitles(c.store.library.tile(id).unwrap());
+        assert!(c.notice.as_ref().is_some_and(|n| n.text == "Subtitles for “Attached”: skipped 1 subtitle line it couldn't read"));
+        wait(&mut c, |c| c.store.importing().count() == 0 && !c.store.is_loading());
+        // A clip the server doesn't list: the tile comes in without subtitles.
+        c.has_window = false;
+        let other = Link { server: base.clone(), clip: "Old/gone.wav".into(), title: None, start: None, end: None, set: None, flac: false }.to_link();
+        let r = c.execute("quip.import", json!({"link": other})).unwrap();
+        let id: Uuid = serde_json::from_value(r["tile"].clone()).unwrap();
+        assert!(c.store.library.tile(id).unwrap().subtitles.is_empty());
+        wait(&mut c, |c| c.store.importing().count() == 0 && !c.store.is_loading());
         std::fs::remove_dir_all(root).ok();
     }
 

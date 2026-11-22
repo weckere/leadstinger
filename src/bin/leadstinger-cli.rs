@@ -6,7 +6,7 @@
 
 use serde_json::{json, Map, Value};
 use std::io::{IsTerminal, Read};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 use leadstinger::audio::Engine;
@@ -15,6 +15,7 @@ use leadstinger::commands::{spec, Kind, Spec, COMMANDS};
 use leadstinger::control::{self, Client};
 use leadstinger::controller::{CmdError, Controller};
 use leadstinger::logic::format_clock;
+use leadstinger::policy::{local_paths, Policy};
 use leadstinger::store::Store;
 
 fn usage() -> String {
@@ -24,14 +25,16 @@ fn usage() -> String {
 
 USAGE:
   {CLI_NAME} <command> [<main argument>…] [--param value]… [--params JSON]
-  {CLI_NAME} commands [--filter TEXT] [--json | --markdown]
+  {CLI_NAME} commands [--filter TEXT] [--json | --markdown | --python]
   {CLI_NAME} help <command>
-  {CLI_NAME} run <script.jsonl | ->
+  {CLI_NAME} run [--dry-run] <script.jsonl | ->   one batch: one undo step, nothing kept if a step fails
   {CLI_NAME} watch
+  {CLI_NAME} connect                            the socket protocol on stdin/stdout, app or library
+  {CLI_NAME} mcp [--allow-destructive]          an MCP server on stdio: commands, query, run, screenshot
   {CLI_NAME} serve [--silent] [--device NAME]   headless: play and serve the socket, no window
 
 Shortcuts: status, list, sets, trigger, play, stop, stop-all, go, add.
-Options: --json  --offline  --data-dir DIR  --safe  --allow-dir DIR  --keep-going
+Options: --json  --offline  --data-dir DIR  --safe  --allow-dir DIR  --keep-going  --dry-run
          --ssh (forced-command mode: the command comes from $SSH_ORIGINAL_COMMAND and
          always runs --safe --json)  --version  --help"
     )
@@ -50,6 +53,7 @@ const TEXT_KEYS: &[&str] = &[
     "event", "pictureLayer", "pictureFit", "folder", "format", "url", "token", "link",
 ];
 
+#[derive(Clone)]
 struct Opts {
     /// Forced-command mode for an SSH key (docs/CLI.md "Remote agents").
     ssh: bool,
@@ -57,6 +61,8 @@ struct Opts {
     offline: bool,
     safe: bool,
     keep_going: bool,
+    /// `run`: report what the script would change, and change nothing.
+    dry_run: bool,
     data_dir: PathBuf,
     allow_dirs: Vec<PathBuf>,
 }
@@ -79,6 +85,8 @@ impl Fail {
         let code = match e.code {
             "ambiguous" => AMBIGUOUS,
             "no_window" => USAGE_ERR,
+            "refused" => REFUSED,
+            "not_running" => NOT_RUNNING,
             _ => FAILED,
         };
         Fail { code, error: e }
@@ -93,6 +101,7 @@ fn main() -> ExitCode {
         offline: false,
         safe: false,
         keep_going: false,
+        dry_run: false,
         data_dir: leadstinger::brand::data_dir(),
         allow_dirs: Vec::new(),
     };
@@ -105,6 +114,7 @@ fn main() -> ExitCode {
             "--offline" => opts.offline = true,
             "--safe" => opts.safe = true,
             "--keep-going" => opts.keep_going = true,
+            "--dry-run" => opts.dry_run = true,
             "--ssh" => opts.ssh = true,
             "--data-dir" | "--allow-dir" => {
                 let Some(v) = it.next() else { return report(&opts, Fail::usage(format!("{a} needs a folder"))) };
@@ -146,6 +156,8 @@ fn main() -> ExitCode {
         Some("commands") => list_commands(&opts, &rest[1..]),
         Some("run") => run_script(&opts, rest.get(1).map(String::as_str)),
         Some("watch") => watch(&opts),
+        Some("connect") => connect(&opts),
+        Some("mcp") => mcp(&opts, &rest[1..]),
         Some("serve") => serve(&opts, &rest[1..]),
         Some(_) => one_command(&opts, &rest),
     };
@@ -175,6 +187,7 @@ fn remote_command(opts: &mut Opts, local: Vec<String>) -> Result<Vec<String>, Fa
         match w.as_str() {
             "--json" | "--safe" => {}
             "--keep-going" => opts.keep_going = true,
+            "--dry-run" => opts.dry_run = true,
             "--data-dir" | "--allow-dir" | "--offline" | "--ssh" => {
                 return Err(Fail::new(REFUSED, "refused", format!("{w} can't be set from a remote command")));
             }
@@ -314,33 +327,52 @@ fn camel(key: &str) -> String {
     out
 }
 
-fn typed(key: &str, raw: &str) -> Value {
+fn typed(key: &str, raw: &str) -> Result<Value, Fail> {
     if raw == "null" {
-        return Value::Null;
+        return Ok(Value::Null);
     }
     if TEXT_KEYS.contains(&key) {
-        return Value::String(raw.to_owned());
+        return Ok(Value::String(raw.to_owned()));
     }
-    let looks_json = raw == "true"
-        || raw == "false"
-        || raw.starts_with(['[', '{', '"'])
-        || raw.parse::<f64>().is_ok();
+    // An object or a list must be valid JSON: sent on as text, the app would ignore it.
+    if raw.starts_with(['[', '{']) {
+        return serde_json::from_str(raw).map_err(|e| Fail::usage(format!("--{key}: not valid JSON ({e}): {raw}")));
+    }
+    let looks_json = raw == "true" || raw == "false" || raw.starts_with('"') || raw.parse::<f64>().is_ok();
     if looks_json {
         if let Ok(v) = serde_json::from_str(raw) {
-            return v;
+            return Ok(v);
         }
     }
-    Value::String(raw.to_owned())
+    Ok(Value::String(raw.to_owned()))
 }
 
-/// The parameters that name files or folders on this machine. A QuipClipper command's
-/// `folder` is a folder in that server's clips library, sent as it is.
-fn local_paths(spec: &Spec) -> &'static [&'static str] {
-    if spec.id.starts_with("quip.") {
-        &["path", "paths"]
-    } else {
-        &["path", "paths", "folder"]
+/// Whether a command's parameter summary names `key` (as a whole word).
+fn mentions(spec: &Spec, key: &str) -> bool {
+    spec.params
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .any(|w| w == key)
+}
+
+/// The parameter a `--flag` names: as typed (`--cues_source`), camel-cased
+/// (`--fade-in` → `fadeIn`) or snake-cased (`--cues-source` → `cues_source`), whichever
+/// the command's summary names, else the summary's word that matches ignoring case and
+/// separators (`--oneshot` → `oneShot`). A flag it doesn't name is a usage error, never dropped.
+fn flag_key(spec: &Spec, flag: &str) -> Result<String, Fail> {
+    let candidates = [flag.to_owned(), camel(flag), flag.replace('-', "_")];
+    if let Some(k) = candidates.into_iter().find(|k| mentions(spec, k)) {
+        return Ok(k);
     }
+    // `--oneshot`, `--ONESHOT`: the summary's own spelling, ignoring case and separators.
+    let loose = |w: &str| w.replace(['-', '_'], "").to_ascii_lowercase();
+    let want = loose(flag);
+    let found = spec.params.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).find(|w| !w.is_empty() && loose(w) == want);
+    found.map(str::to_owned).ok_or_else(|| {
+        Fail::usage(format!(
+            "{} has no option --{flag} (see `{CLI_NAME} help {}`; --params '{{…}}' sends a JSON object as it is)",
+            spec.id, spec.id
+        ))
+    })
 }
 
 /// Turn `<command> [main…] [--k v]…` into an id and a parameter object.
@@ -368,13 +400,13 @@ fn parse(args: &[String]) -> Result<(&'static Spec, Value), Fail> {
                 Some((k, v)) => (k, Some(v.to_owned())),
                 None => (k, None),
             };
-            let key = camel(k);
+            let key = flag_key(spec, k)?;
             let value = match inline {
-                Some(v) => typed(&key, &v),
+                Some(v) => typed(&key, &v)?,
                 None => match args.get(i + 1).filter(|n| !n.starts_with("--")) {
                     Some(v) => {
                         i += 1;
-                        typed(&key, v)
+                        typed(&key, v)?
                     }
                     None => Value::Bool(true),
                 },
@@ -391,11 +423,11 @@ fn parse(args: &[String]) -> Result<(&'static Spec, Value), Fail> {
         let v = if main == "paths" {
             json!(positional)
         } else if positional.len() == 1 {
-            typed(main, &positional[0])
+            typed(main, &positional[0])?
         } else if positional.len() == 2 && main != "tile" && spec.params.starts_with("{tile") {
             // `tile.picture <tile> <path>`, `tile.replaceAudio <tile> <path>`
             params.insert("tile".into(), json!(positional[0]));
-            typed(main, &positional[1])
+            typed(main, &positional[1])?
         } else {
             return Err(Fail::usage(format!("{} takes one main argument ({main}); quote names with spaces", spec.id)));
         };
@@ -409,7 +441,7 @@ fn parse(args: &[String]) -> Result<(&'static Spec, Value), Fail> {
     }
     // Paths are relative to the caller, not to the app.
     for &key in local_paths(spec).iter().filter(|k| **k != "paths") {
-        if let Some(Value::String(p)) = params.get(key) {
+        if let Some(Value::String(p)) = params.get(key).filter(|v| v.as_str().is_some_and(|s| !s.is_empty())) {
             params.insert(key.into(), json!(absolute(p)));
         }
     }
@@ -427,34 +459,14 @@ fn parse(args: &[String]) -> Result<(&'static Spec, Value), Fail> {
 }
 
 /// `--safe`: no destructive commands, and files only inside `--allow-dir` folders.
+/// The policy `--safe` and `--allow-dir` ask for.
+fn policy(opts: &Opts) -> Policy {
+    if opts.safe { Policy::safe(opts.allow_dirs.clone()) } else { Policy::open() }
+}
+
+/// Refuse here what the policy refuses (the app checks again on the socket).
 fn check_safe(opts: &Opts, spec: &Spec, params: &Value) -> Result<(), Fail> {
-    if !opts.safe {
-        return Ok(());
-    }
-    if spec.destructive {
-        return Err(Fail::new(REFUSED, "refused", format!("{} is destructive; --safe refuses it", spec.id)));
-    }
-    if spec.id == "app.quit" {
-        return Err(Fail::new(REFUSED, "refused", "--safe doesn't quit the app; ask whoever is at it"));
-    }
-    if matches!(spec.id, "quip.connect" | "quip.disconnect" | "quip.pair") {
-        return Err(Fail::new(REFUSED, "refused", "--safe doesn't change which QuipClipper servers are trusted; ask the user"));
-    }
-    let mut paths: Vec<&str> = Vec::new();
-    for &key in local_paths(spec) {
-        match params.get(key) {
-            Some(Value::String(s)) => paths.push(s),
-            Some(Value::Array(a)) => paths.extend(a.iter().filter_map(Value::as_str)),
-            _ => {}
-        }
-    }
-    for p in paths {
-        let real = Path::new(p).canonicalize().unwrap_or_else(|_| PathBuf::from(p));
-        if !opts.allow_dirs.iter().any(|d| real.starts_with(d)) {
-            return Err(Fail::new(REFUSED, "refused", format!("--safe: {p} isn't inside an --allow-dir folder")));
-        }
-    }
-    Ok(())
+    policy(opts).check(spec, params).map_err(Fail::from_cmd)
 }
 
 /// Where commands run: the app over its socket, or the library opened here.
@@ -466,7 +478,11 @@ enum Target {
 impl Target {
     fn open(opts: &Opts, need_app: bool) -> Result<Target, Fail> {
         if !opts.offline {
-            if let Ok(c) = Client::connect(&opts.data_dir) {
+            if let Ok(mut c) = Client::connect(&opts.data_dir) {
+                if opts.safe {
+                    // The app holds this connection to the policy from now on.
+                    c.call("policy", policy(opts).to_json()).map_err(Fail::from_cmd)?;
+                }
                 return Ok(Target::App(c));
             }
         }
@@ -491,8 +507,14 @@ impl Target {
     /// progress on a terminal, and gives what it wrote.
     fn call(&mut self, spec: &Spec, params: Value) -> Result<Value, Fail> {
         let started = self.call_once(spec, params)?;
+        self.finish(spec, started)
+    }
+
+    /// Wait for what a command started (an export, a transcription, a pairing…).
+    fn finish(&mut self, spec: &Spec, started: Value) -> Result<Value, Fail> {
         match (spec.id, started["job"].as_u64()) {
             ("tile.render" | "set.render", Some(job)) => self.wait_render(job, started),
+            ("tile.transcribe" | "set.transcribe" | "tile.alignWords", Some(job)) => self.wait_transcribe(job, started),
             ("quip.pair", _) if matches!(started["status"].as_str(), Some("starting" | "waiting")) => self.wait_pair(started),
             ("quip.discover", _) if started["looking"] == json!(true) => self.wait_discover(),
             ("app.checkForUpdates", _) => self.wait_updates(started),
@@ -554,6 +576,37 @@ impl Target {
         }
     }
 
+    /// A transcription: wait for every tile, showing which one and how far on a
+    /// terminal; fails when no tile could be done.
+    fn wait_transcribe(&mut self, job: u64, started: Value) -> Result<Value, Fail> {
+        let status = spec("transcribe.status").expect("registered");
+        let tty = std::io::stderr().is_terminal();
+        let j = loop {
+            let v = self.call_once(status, json!({"job": job}))?;
+            let j = v["jobs"][0].clone();
+            if j["finished"].as_bool() != Some(false) {
+                break j;
+            }
+            if tty {
+                let cur = &j["current"];
+                let pct = cur["fraction"].as_f64().map(|f| format!(" {:.0}%", f * 100.0)).unwrap_or_default();
+                eprint!("\r\x1b[2KTranscribing {}{pct}", cur["title"].as_str().unwrap_or_default());
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        if tty {
+            eprint!("\r\x1b[2K");
+        }
+        if j["cancelled"] == json!(true) {
+            return Err(Fail::new(FAILED, "cancelled", "The transcription was cancelled"));
+        }
+        let errors: Vec<String> = j["errors"].as_array().map(|a| a.iter().map(|e| format!("“{}”: {}", e["title"].as_str().unwrap_or_default(), e["error"].as_str().unwrap_or_default())).collect()).unwrap_or_default();
+        if j["results"].as_array().is_none_or(|r| r.is_empty()) && !errors.is_empty() {
+            return Err(Fail::new(FAILED, "failed", format!("Couldn't transcribe {}", errors.join("; "))));
+        }
+        Ok(json!({"job": job, "engine": started["engine"], "results": j["results"], "errors": j["errors"], "skipped": started["skipped"]}))
+    }
+
     fn wait_render(&mut self, job: u64, started: Value) -> Result<Value, Fail> {
         let status = spec("render.status").expect("registered");
         let tty = std::io::stderr().is_terminal();
@@ -585,20 +638,206 @@ impl Target {
     fn call_once(&mut self, spec: &Spec, params: Value) -> Result<Value, Fail> {
         match self {
             Target::App(c) => c.call(spec.id, params).map_err(Fail::from_cmd),
-            Target::Library { ctl, .. } => {
-                if spec.kind == Kind::Live {
-                    return Err(Fail::new(NOT_RUNNING, "not_running", format!("{} needs the running app", spec.id)));
+            Target::Library { ctl, .. } => offline_call(ctl, spec.id, params, &Policy::open()).map_err(Fail::from_cmd),
+        }
+    }
+}
+
+/// A command run on the library opened here (the app isn't running): refused when it, or
+/// a step of its batch, needs the app; saved afterwards.
+fn offline_call(ctl: &mut Controller, id: &str, params: Value, policy: &Policy) -> Result<Value, CmdError> {
+    let not_running = |id: &str| CmdError { code: "not_running", message: format!("{id} needs the running app"), candidates: vec![] };
+    if let Some(s) = spec(id) {
+        policy.check(s, &params)?;
+        if s.kind == Kind::Live {
+            return Err(not_running(id));
+        }
+    }
+    if id == "batch.run" {
+        let live = params["steps"].as_array().into_iter().flatten().filter_map(|st| st["command"].as_str()).find(|c| spec(c).is_some_and(|s| s.kind == Kind::Live));
+        if let Some(c) = live {
+            return Err(not_running(c));
+        }
+    }
+    let r = ctl.execute_with(id, params, policy);
+    ctl.effects.clear();
+    // Files added are copied (or converted) in the background: finish first.
+    ctl.store.finish_imports();
+    if ctl.store.has_unsaved() {
+        ctl.store.save_now().map_err(|e| CmdError { code: "failed", message: format!("couldn't save the library: {e:#}"), candidates: vec![] })?;
+    }
+    r
+}
+
+/// `connect`: the control socket's protocol (docs/CLI.md "Programs") on stdin and stdout,
+/// for programs and clients such as clients/python: to the running app, or, when it isn't
+/// running, to the library opened here (holding its lock until stdin closes; commands
+/// that need the app answer `not_running`). Under `--safe` the policy is set first and
+/// can't be widened.
+fn connect(opts: &Opts) -> Result<(), Fail> {
+    use std::io::{BufRead, BufReader, Write};
+    let policy = policy(opts);
+    if !opts.offline {
+        if let Ok(stream) = std::os::unix::net::UnixStream::connect(control::socket_path(&opts.data_dir)) {
+            let mut to_app = stream.try_clone().map_err(|e| Fail::new(FAILED, "io", e.to_string()))?;
+            let mut from_app = BufReader::new(stream);
+            if opts.safe {
+                writeln!(to_app, "{}", json!({"command": "policy", "params": policy.to_json()})).map_err(|e| Fail::new(FAILED, "io", e.to_string()))?;
+                let mut line = String::new();
+                from_app.read_line(&mut line).map_err(|e| Fail::new(FAILED, "io", e.to_string()))?;
+                control::error_from_reply(&line).map_err(Fail::from_cmd)?;
+            }
+            // Replies (and events after events.subscribe) go straight out, a line at a time.
+            let out = std::thread::spawn(move || {
+                let mut stdout = std::io::stdout();
+                for line in from_app.lines().map_while(Result::ok) {
+                    if writeln!(stdout, "{line}").and_then(|()| stdout.flush()).is_err() {
+                        break;
+                    }
                 }
-                let r = ctl.execute(spec.id, params).map_err(Fail::from_cmd);
-                ctl.effects.clear();
-                // Files added are copied (or converted) in the background: finish first.
-                ctl.store.finish_imports();
-                if ctl.store.has_unsaved() {
-                    ctl.store.save_now().map_err(|e| Fail::new(FAILED, "failed", format!("couldn't save the library: {e:#}")))?;
+            });
+            for line in std::io::stdin().lock().lines().map_while(Result::ok) {
+                if writeln!(to_app, "{line}").is_err() {
+                    break;
                 }
-                r
+            }
+            to_app.shutdown(std::net::Shutdown::Write).ok();
+            out.join().ok();
+            return Ok(());
+        }
+    }
+    let Target::Library { mut ctl, _lock } = Target::open(&Opts { offline: true, ..opts.clone() }, false)? else { unreachable!("offline") };
+    let mut policy = policy;
+    let mut stdout = std::io::stdout();
+    for line in std::io::stdin().lock().lines().map_while(Result::ok) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let (id, reply) = match serde_json::from_str::<Value>(&line) {
+            Err(e) => (Value::Null, Err(CmdError { code: "bad_request", message: format!("not JSON: {e}"), candidates: vec![] })),
+            Ok(req) => {
+                let id = req.get("id").cloned().unwrap_or(Value::Null);
+                let command = req.get("command").and_then(Value::as_str).unwrap_or("").to_owned();
+                let params = req.get("params").cloned().unwrap_or_else(|| json!({}));
+                let reply = match command.as_str() {
+                    "hello" => Ok(json!({"app": APP_NAME, "version": env!("CARGO_PKG_VERSION"), "pid": std::process::id(), "offline": true})),
+                    "policy" => Policy::from_json(&params).map(|asked| {
+                        policy = policy.narrow(&asked);
+                        policy.to_json()
+                    }),
+                    "events.subscribe" => Err(CmdError { code: "not_running", message: format!("{APP_NAME} isn't running; events need the app"), candidates: vec![] }),
+                    _ => offline_call(&mut ctl, &command, params, &policy),
+                };
+                (id, reply)
+            }
+        };
+        if writeln!(stdout, "{}", control::encode(id, reply)).and_then(|()| stdout.flush()).is_err() {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// `mcp`: an MCP server on stdio (docs/CLI.md "MCP"). Each call reaches the running app,
+/// or the library when it's closed (locked only for that call, so the app can start while
+/// a client is connected); `--safe` and `--allow-dir` hold for every call.
+fn mcp(opts: &Opts, args: &[String]) -> Result<(), Fail> {
+    let mut allow_destructive = false;
+    for a in args {
+        match a.as_str() {
+            "--allow-destructive" if opts.ssh => return Err(Fail::new(REFUSED, "refused", "--allow-destructive can't be set from a remote command")),
+            "--allow-destructive" => allow_destructive = true,
+            other => return Err(Fail::usage(format!("mcp: unknown option {other}"))),
+        }
+    }
+    let shots = std::env::temp_dir().join(format!("{}-mcp-{}", leadstinger::brand::SLUG, std::process::id()));
+    let backend = McpBackend { opts: opts.clone(), shots: shots.clone(), taken: 0 };
+    let stdin = std::io::stdin();
+    let r = leadstinger::mcp::Server::new(backend, allow_destructive).serve(stdin.lock(), std::io::stdout().lock());
+    std::fs::remove_dir_all(&shots).ok();
+    r.map_err(|e| Fail::new(FAILED, "io", e.to_string()))
+}
+
+struct McpBackend {
+    opts: Opts,
+    /// Where screenshots are written for a moment before they're sent.
+    shots: PathBuf,
+    taken: u32,
+}
+
+impl leadstinger::mcp::Backend for McpBackend {
+    fn call(&mut self, command: &str, params: Value) -> Result<Value, CmdError> {
+        let policy = policy(&self.opts);
+        let live = spec(command).is_some_and(|s| s.kind == Kind::Live);
+        if let Some(s) = spec(command) {
+            policy.check(s, &params)?;
+        }
+        match Target::open(&self.opts, live).map_err(|f| f.error)? {
+            Target::App(mut c) => c.call(command, params),
+            Target::Library { mut ctl, _lock } => offline_call(&mut ctl, command, params, &policy),
+        }
+    }
+
+    fn screenshot(&mut self, params: Value) -> Result<Vec<u8>, CmdError> {
+        let fail = |code: &'static str, message: String| CmdError { code, message, candidates: vec![] };
+        let mut c = Client::connect(&self.opts.data_dir)
+            .map_err(|_| fail("not_running", format!("{APP_NAME} isn't running; a screenshot needs the app and its window")))?;
+        std::fs::create_dir_all(&self.shots).map_err(|e| fail("io", e.to_string()))?;
+        let dir = self.shots.canonicalize().map_err(|e| fail("io", e.to_string()))?;
+        if self.opts.safe {
+            // The connection's policy, plus this server's own folder for the picture.
+            let mut dirs = self.opts.allow_dirs.clone();
+            dirs.push(dir.clone());
+            c.call("policy", Policy::safe(dirs).to_json())?;
+        }
+        self.taken += 1;
+        let path = dir.join(format!("shot-{}.png", self.taken));
+        let mut p = match params {
+            Value::Object(m) => Value::Object(m),
+            _ => json!({}),
+        };
+        p["path"] = json!(path);
+        c.call("view.screenshot", p)?;
+        // The window writes it once it has settled: up to a second when it's hidden.
+        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        let mut last = 0;
+        loop {
+            let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            if size > 0 && size == last {
+                break;
+            }
+            if std::time::Instant::now() > deadline {
+                return Err(fail("failed", "the window didn't write the screenshot in time".into()));
+            }
+            last = size;
+            std::thread::sleep(Duration::from_millis(150));
+        }
+        let png = std::fs::read(&path).map_err(|e| fail("io", e.to_string()));
+        std::fs::remove_file(&path).ok();
+        png
+    }
+}
+
+/// `run --dry-run`: what the script would have changed.
+fn print_changes(opts: &Opts, changes: &Value) {
+    if opts.json {
+        println!("{}", json!({"dryRun": true, "changes": changes}));
+        return;
+    }
+    println!("A dry run: nothing was changed. The script would:");
+    let mut any = false;
+    for (kind, name_key) in [("sets", "name"), ("tiles", "title")] {
+        for (what, verb) in [("added", "add"), ("removed", "remove"), ("changed", "change")] {
+            for item in changes[kind][what].as_array().map(Vec::as_slice).unwrap_or_default() {
+                any = true;
+                let fields = item["fields"].as_array().map(|f| f.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "));
+                let fields = fields.map(|f| format!(" ({f})")).unwrap_or_default();
+                println!("  {verb} {} “{}”{fields}", &kind[..kind.len() - 1], item[name_key].as_str().unwrap_or_default());
             }
         }
+    }
+    if !any {
+        println!("  change no sets or tiles");
     }
 }
 
@@ -722,18 +961,24 @@ fn print_sets(v: &Value) {
 fn list_commands(opts: &Opts, args: &[String]) -> Result<(), Fail> {
     let mut filter = None;
     let mut markdown = false;
+    let mut python = false;
     let mut json = opts.json;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
             "--filter" => filter = Some(it.next().ok_or_else(|| Fail::usage("--filter needs text"))?.to_lowercase()),
             "--markdown" => markdown = true,
+            "--python" => python = true,
             "--json" => json = true,
             other => return Err(Fail::usage(format!("commands: unknown option {other}"))),
         }
     }
     if markdown {
         print!("{}", leadstinger::commands::markdown());
+        return Ok(());
+    }
+    if python {
+        print!("{}", leadstinger::pyclient::generate());
         return Ok(());
     }
     let shown: Vec<&Spec> = COMMANDS
@@ -744,10 +989,14 @@ fn list_commands(opts: &Opts, args: &[String]) -> Result<(), Fail> {
         let v: Vec<Value> = shown
             .iter()
             .map(|s| {
+                let summary = leadstinger::schema::read(s.params).ok();
                 json!({
                     "id": s.id, "label": s.label, "main": s.main, "params": s.params,
-                    "kind": format!("{:?}", s.kind).to_lowercase(), "destructive": s.destructive,
+                    "kind": format!("{:?}", s.kind).to_lowercase(), "destructive": s.destructive, "undo": s.undo,
                     "shortcut": (!s.shortcut_text().is_empty()).then(|| s.shortcut_text()),
+                    "inputSchema": leadstinger::schema::input_schema(s),
+                    "note": summary.as_ref().and_then(|r| r.note.clone()),
+                    "returns": summary.and_then(|r| r.returns),
                 })
             })
             .collect();
@@ -813,29 +1062,39 @@ fn run_script(opts: &Opts, file: Option<&str>) -> Result<(), Fail> {
     }
     let need_app = parsed.iter().any(|(s, _)| s.kind == Kind::Live);
     let mut target = Target::open(opts, need_app)?;
+    // One batch: one undo step, and unless --keep-going nothing is kept when a step fails.
+    let steps: Vec<Value> = parsed.iter().map(|(s, p)| json!({"command": s.id, "params": p})).collect();
+    let batch = spec("batch.run").expect("registered");
+    let reply = target.call_once(batch, json!({"steps": steps, "atomic": !opts.keep_going, "dryRun": opts.dry_run}))?;
     let mut first_failure = None;
-    for (n, (s, params)) in parsed.into_iter().enumerate() {
-        let r = target.call(s, params);
+    for step in reply["steps"].as_array().map(Vec::as_slice).unwrap_or_default() {
+        let n = step["step"].as_u64().unwrap_or(0);
+        let s = step["command"].as_str().and_then(spec).expect("a step names a registered command");
+        let r = if step["ok"] == json!(true) {
+            target.finish(s, step["result"].clone())
+        } else {
+            Err(Fail::from_cmd(control::error_from_json(&step["error"])))
+        };
         let line = match &r {
-            Ok(v) => json!({"step": n + 1, "command": s.id, "ok": true, "result": v}),
-            Err(f) => json!({"step": n + 1, "command": s.id, "ok": false, "error": control::error_json(&f.error)}),
+            Ok(v) => json!({"step": n, "command": s.id, "ok": true, "result": v}),
+            Err(f) => json!({"step": n, "command": s.id, "ok": false, "error": control::error_json(&f.error)}),
         };
         if opts.json {
             println!("{line}");
         } else {
             match &r {
-                Ok(_) => println!("{:>3}. {}  ok", n + 1, s.id),
-                Err(f) => println!("{:>3}. {}  FAILED: {}", n + 1, s.id, f.error.message),
+                Ok(_) => println!("{n:>3}. {}  ok", s.id),
+                Err(f) => println!("{n:>3}. {}  FAILED: {}", s.id, f.error.message),
             }
         }
         if let Err(f) = r {
-            if first_failure.is_none() {
-                first_failure = Some(f);
-            }
-            if !opts.keep_going {
-                break;
-            }
+            first_failure.get_or_insert(f);
         }
+    }
+    if opts.dry_run {
+        print_changes(opts, &reply["changes"]);
+    } else if reply["rolledBack"] == json!(true) {
+        eprintln!("{CLI_NAME}: a step failed, so the script's changes to sets and tiles were put back (--keep-going keeps the steps before it)");
     }
     match first_failure {
         Some(f) => Err(Fail { code: f.code, error: CmdError { code: "script_failed", message: f.error.message, candidates: vec![] } }),
@@ -965,22 +1224,47 @@ mod tests {
         assert!(split_words("play 'oops").is_err());
     }
 
-    /// A QuipClipper `--folder` is a folder in its clips library: sent as given, and not
-    /// checked against `--allow-dir`. A local `--folder` is still made absolute.
+    /// A QuipClipper `--folder` (quip.* and view.quip) is a folder in its clips library:
+    /// sent as given, and not checked against `--allow-dir`. A local `--folder` is still
+    /// made absolute.
     #[test]
     fn quip_folders_stay_library_paths() {
         let parsed = |a: &[&str]| parse(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>()).unwrap_or_else(|f| panic!("{}", f.error.message));
         let (s, p) = parsed(&["quip.browse", "Heat (1995)"]);
         assert_eq!(p, json!({"folder": "Heat (1995)"}));
-        let safe = Opts { ssh: false, json: true, offline: true, safe: true, keep_going: false, data_dir: "data".into(), allow_dirs: vec![] };
+        let safe = Opts { ssh: false, json: true, offline: true, safe: true, keep_going: false, dry_run: false, data_dir: "data".into(), allow_dirs: vec![] };
         assert!(check_safe(&safe, s, &p).is_ok());
         let (s, p) = parsed(&["quip.search", "heat", "--folder", "Movies/Heat (1995)"]);
         assert_eq!(p["folder"], "Movies/Heat (1995)");
+        assert!(check_safe(&safe, s, &p).is_ok());
+        let (s, p) = parsed(&["view.quip", "--folder", "Movies/Heat (1995)", "--query", "bank"]);
+        assert_eq!(p, json!({"folder": "Movies/Heat (1995)", "query": "bank"}));
         assert!(check_safe(&safe, s, &p).is_ok());
         let (s, p) = parsed(&["set.render", "--folder", "sounds"]);
         let folder = p["folder"].as_str().unwrap();
         assert!(std::path::Path::new(folder).is_absolute() && folder.ends_with("sounds"), "{folder}");
         assert!(check_safe(&safe, s, &p).is_err());
+    }
+
+    /// An object- or list-valued flag reaches the app under the name the command uses
+    /// (`cues_source` stays snake-case); a flag the command doesn't name, or JSON that
+    /// doesn't parse, is a usage error instead of being dropped.
+    #[test]
+    fn flags_keep_their_names_and_json_values() {
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let ok = |a: &[&str]| parse(&args(a)).unwrap_or_else(|f| panic!("{}", f.error.message)).1;
+        let err = |a: &[&str]| parse(&args(a)).err().map(|f| (f.code, f.error.message)).expect("a usage error");
+        let p = ok(&["tile.subtitlesSet", "key:1", "--cues", r#"[{"start":0,"end":1,"text":"Hi"}]"#, "--cues_source", r#"{"kind":"manual"}"#]);
+        assert_eq!(p, json!({"tile": "key:1", "cues": [{"start": 0, "end": 1, "text": "Hi"}], "cues_source": {"kind": "manual"}}));
+        assert_eq!(ok(&["tile.subtitlesSet", "key:1", "--cues-source={\"kind\":\"x\"}"])["cues_source"], json!({"kind": "x"}));
+        assert_eq!(ok(&["tile.subtitlesSet", "key:1", "--keep-aligned", "false"])["keepAligned"], json!(false));
+        assert_eq!(ok(&["tile.add", "--new-row"])["newRow"], json!(true));
+        assert_eq!(ok(&["tile.set", "key:1", "--oneshot"])["oneShot"], json!(true));
+        let (code, msg) = err(&["tile.subtitlesSet", "key:1", "--cuesSorce", "{}"]);
+        assert!(code == super::USAGE_ERR && msg.contains("--cuesSorce"), "{msg}");
+        let (code, msg) = err(&["tile.subtitlesSet", "key:1", "--cues", "[{start:0}]"]);
+        assert!(code == super::USAGE_ERR && msg.contains("not valid JSON"), "{msg}");
+        assert!(err(&["status", "--verbose"]).1.contains("no option --verbose"));
     }
 
     /// The `leadstinger-cli …` lines in code blocks and code spans of a Markdown file,
@@ -1027,7 +1311,8 @@ mod tests {
                 }
             }
         }
-        files.retain(|f| f.exists());
+        // Plans (docs/*-PLAN.md) name commands that don't exist yet.
+        files.retain(|f| f.exists() && !f.file_name().is_some_and(|n| n.to_string_lossy().ends_with("-PLAN.md")));
         let (mut checked, mut wrong) = (0, Vec::new());
         for file in &files {
             let name = file.strip_prefix(root).unwrap().display().to_string();
@@ -1037,7 +1322,7 @@ mod tests {
                 let mut i = 0;
                 while i < words.len() {
                     match words[i].as_str() {
-                        "--json" | "--offline" | "--safe" | "--keep-going" | "--ssh" => drop(words.remove(i)),
+                        "--json" | "--offline" | "--safe" | "--keep-going" | "--dry-run" | "--ssh" => drop(words.remove(i)),
                         "--data-dir" | "--allow-dir" => drop(words.drain(i..(i + 2).min(words.len()))),
                         _ => i += 1,
                     }
@@ -1049,7 +1334,7 @@ mod tests {
                 }
                 checked += 1;
                 let problem = match words[0].as_str() {
-                    "commands" | "run" | "watch" | "serve" => None,
+                    "commands" | "run" | "watch" | "serve" | "connect" | "mcp" => None,
                     "help" => words.get(1).filter(|c| spec(alias(c)).is_none()).map(|c| format!("no command {c:?}")),
                     _ => {
                         // `--token -` reads stdin; the test has none to give.

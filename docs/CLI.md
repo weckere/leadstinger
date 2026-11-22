@@ -15,24 +15,51 @@ the commands that only change the library.
 leadstinger-cli <command> [<main argument>…] [--param value]… [--params '{"json": …}']
 leadstinger-cli commands [--filter TEXT] [--json | --markdown]
 leadstinger-cli help <command>
-leadstinger-cli run <script.jsonl | ->        one {"command": …, "params": {…}} per line
+leadstinger-cli run [--dry-run] <script.jsonl | ->   one {"command": …, "params": {…}} per line, as one batch (see Scripts)
 leadstinger-cli watch                         events from the app, one per line
+leadstinger-cli connect                       the socket protocol on stdin/stdout, for programs (see Programs)
+leadstinger-cli mcp [--allow-destructive]     an MCP server on stdio, for clients with no shell (see MCP)
 leadstinger-cli serve [--silent] [--device NAME]   LeadStinger without a window (see Headless)
 ```
 
 Global options: `--json` (machine output; the default when stdout isn't a terminal),
 `--offline` (never contact the app), `--data-dir DIR` (another library; default:
 `LEADSTINGER_DATA_DIR` or the usual place), `--safe` (refuse destructive commands and files
-outside `--allow-dir DIR`, for agents), `--keep-going` (`run`: don't stop at an error).
+outside `--allow-dir DIR`, for agents; the app holds the connection to it too), `--keep-going`
+(`run`: don't stop at an error, and keep the steps before it), `--dry-run` (`run`: report
+what the script would change, and change nothing).
 
 - **Main argument.** Each command has one parameter you can give without its name, e.g.
   `leadstinger-cli tile.trigger "Rimshot"` or `leadstinger-cli tile.add *.wav`. Commands that
   take a tile and a file also accept both: `leadstinger-cli tile.picture Applause logo.png`.
 - **Other parameters** are `--name value`. `--fade-in 0.5` and `--fadeIn 0.5` are the
-  same. A value is a number, `true`/`false`, `null` or JSON when it looks like one, and
-  text otherwise. Relative paths are relative to where you run the command.
+  same, and so are `--cues-source` and `--cues_source`. A value is a number,
+  `true`/`false`, `null` or JSON when it looks like one, and text otherwise; a value
+  that starts with `{` or `[` must be valid JSON. An option the command doesn't take is
+  an error (exit code 2), never ignored; `--params '{…}'` sends a JSON object as it is.
+  Relative paths of files on this computer are relative to where you run the command;
+  a folder on a QuipClipper server is sent as given.
 - **Shortcuts:** `status`, `list` (`tile.list`), `sets` (`set.list`), `trigger`, `play`,
   `stop`, `stop-all`, `go` (`cue.go`), `add` (`tile.add`).
+
+## Scripts
+
+`run` sends its script to the app as one `batch.run`: the steps run one after another with
+nothing else acting in between, and they undo as one step (Edit ▸ Undo; `edit.undo` answers `{"undid": "Script"}`). When a step
+fails, the script stops and its changes to sets and tiles are put back, so nothing is half
+done; `--keep-going` runs the rest and keeps what worked. As with undo, settings, the view
+and playback aren't put back. A step that starts an export, a transcription or an import
+isn't waited for inside the batch; `run` waits for it afterwards, as a single command does.
+
+To see what a script would change first, add `--dry-run`:
+
+```
+leadstinger-cli run --dry-run retitle.jsonl
+```
+
+It lists the sets and tiles the script would add, remove and change (with which fields), then
+changes nothing. A dry run takes only queries and changes that undo can take back (no
+imports, recordings or playback); `batch.run` with `dryRun: true` is the same for programs.
 
 ## Referring to tiles and sets
 
@@ -113,6 +140,77 @@ imports = [ leadstinger.nixosModules.default ];
 services.leadstinger = { enable = true; user = "kiosk"; };   # also: dataDir, device, silent, linger
 ```
 
+## Programs
+
+`leadstinger-cli connect` is for programs that send many commands: it stays running and
+speaks the control socket's protocol on stdin and stdout, one JSON object per line.
+
+```
+→ {"id": 1, "command": "tile.trigger", "params": {"tile": "Rimshot"}}
+← {"id": 1, "ok": true, "result": {"tile": "…", "state": "playing"}}
+← {"id": 2, "ok": false, "error": {"code": "ambiguous", "message": "…", "candidates": [...]}}
+```
+
+With the app running it passes each line to the app (and its events, after
+`{"command": "events.subscribe"}`). With the app closed it opens the library itself and
+holds the library lock until its stdin closes, so the app waits for it; commands that need
+the app answer `not_running`, and `hello` answers `offline: true`. `--safe` and
+`--allow-dir` set the connection's policy first; a `{"command": "policy", ...}` line can
+narrow it further but never widen it. Over SSH, the `--ssh` forced command allows
+`ssh you@host connect` too, always safe.
+
+### Python
+
+`clients/python/leadstinger.py` is a Python client generated from the command registry,
+one file with nothing to install (Python 3.8 or newer). It runs `leadstinger-cli connect`,
+so it reaches the app or the library the same way. Every command is a method, grouped by
+area, with the registry's parameter names as keyword arguments; the main parameter may come
+first, without its name:
+
+```python
+import leadstinger
+with leadstinger.connect() as ls:              # safe=True, allow_dirs=[...], ssh="you@host", data_dir=...
+    ls.tile.trigger("Rimshot")
+    with ls.batch() as b:                      # one batch.run: one undo step, nothing kept on failure
+        for t in ls.tile.list("Show"):
+            b.tile.set(t["id"], fadeIn=0.2)
+    print(b.result["changes"])
+```
+
+A failed command raises `leadstinger.Error` (`code`, `message`, `candidates`);
+`ls.batch(dry_run=True)` reports the changes and changes nothing. Any installed
+`leadstinger-cli` writes the client that matches it: `leadstinger-cli commands --python >
+leadstinger.py`. Commands that start a job (an export, a transcription) return its id at
+once; ask `ls.render.status(job)` or `ls.transcribe.status(job)` until it's finished.
+
+### MCP
+
+`leadstinger-cli mcp` is an MCP server on stdio, for AI clients that can't run a shell
+(an agent that can should use the CLI or the Python client: one script costs less than
+many tool calls). It offers four tools in front of every command, so it adds little to a
+client's context:
+
+| Tool | Does |
+|---|---|
+| `commands` | finds commands by words (`filter`), or gives one command's parameters and JSON Schema (`id`) |
+| `query` | runs a read-only command: `status`, `tile.list`, `set.list`, … |
+| `run` | runs one command, or several as one batch (`steps`, `atomic`, `dryRun`), as `batch.run` does |
+| `screenshot` | the window as a PNG image (needs the app and its window) |
+
+Each call reaches the running app, or the library when the app is closed (locked only
+for that call, so the app can start while a client is connected). Deleting sets and tiles
+and quitting the app are refused unless the server is started with `--allow-destructive`;
+`--safe` and `--allow-dir` work as for any command. A job (an export, a transcription)
+returns its id at once: ask `query` `render.status` or `transcribe.status`. To add it to
+Claude Code:
+
+```
+claude mcp add leadstinger -- leadstinger-cli mcp
+```
+
+Over SSH, the `--ssh` forced command allows `ssh you@host mcp` (always safe, and never
+with `--allow-destructive`), so a client on another machine can run the server there.
+
 ## Agents
 
 `skills/leadstinger/SKILL.md` teaches an AI agent (Claude Code) to drive the app with this
@@ -133,7 +231,8 @@ command="leadstinger-cli --ssh",restrict ssh-ed25519 AAAA… my-agent
 
 in `~/.ssh/authorized_keys` of the user who runs the app. (Use the full path to
 `leadstinger-cli`; a dedicated user with sudo rights to run it as you is stricter still.) The
-agent then runs `ssh you@host 'trigger key:1'` or `ssh you@host 'run -' < show.jsonl`.
+agent then runs `ssh you@host 'trigger key:1'`, `ssh you@host 'run -' < show.jsonl` or
+`ssh you@host connect` (see Programs; the Python client's `connect(ssh="you@host")`).
 In this mode:
 
 - the command comes from `$SSH_ORIGINAL_COMMAND`, split like plain shell words with no
@@ -142,6 +241,11 @@ In this mode:
   on the forced command line are refused (exit 5);
 - the remote side can't choose `--data-dir`, `--allow-dir` or `--offline`, and `run`
   reads its script only from stdin.
+
+A program that talks to the control socket itself can ask for the same rules: send
+`{"command": "policy", "params": {"safe": true, "allowDirs": ["/path"]}}` first, and the
+app refuses (code `refused`) everything `--safe` would on that connection, the steps of a
+batch included. A connection can narrow its policy but never widen it again.
 
 ## OSC
 
@@ -205,6 +309,12 @@ An address that goes away (a tile removed, a smaller set) is sent once more as `
 | `library.path` | Show where the library is | `→ {library, data_dir}` | read-only |
 | `library.reveal` | Show Library Folder | `{}  opens the data folder in the file manager` | running app |
 
+### batch
+
+| Command | What it does | Parameters | Needs |
+|---|---|---|---|
+| `batch.run` | Run a script | `{steps ([{command, params?}], at most 2000), atomic? (default true: when a step fails, the sets and tiles go back as they were and nothing is recorded), dryRun? (default false: true runs the steps, reports what they would change and then puts everything back; only queries and changes that undo can take back are allowed)}  runs the steps one after another with nothing else acting in between, as one undo step (Script); as with undo, settings, the view and playback aren't put back, and a background job a step starts (an export, a transcription, an import) isn't waited for → {ok, steps: [{step, command, ok, result \| error}], failed (the step that failed, or null), rolledBack, dryRun, undo (Script, or null when nothing changed or it was put back), changes: {sets: {added, removed, changed: [{set, name, fields}]}, tiles: {added, removed, changed: [{tile, title, set, fields}]}}}` | library (works with the app closed) |
+
 ### tile
 
 | Command | What it does | Parameters | Needs |
@@ -215,6 +325,23 @@ An address that goes away (a tile removed, a smaller set) is sent once more as `
 | `tile.jump` | Jump to a marker | `{tile, marker (name or #n)}  a playing tile moves there with a short crossfade (past the vamp, it plays on); a stopped one starts there → {tile, marker, at}` (positional: `tile`) | running app |
 | `tile.markerAdd` | Add a marker | `{tile, at? (seconds into the file; default: where it's playing now), name? (default "Marker N")}` (positional: `tile`) | library (works with the app closed) |
 | `tile.markerMove` | Move or rename a marker | `{tile, marker (name or #n), at? (seconds into the file), name? (a new name)}` (positional: `tile`) | library (works with the app closed) |
+| `tile.subtitles` | Show a tile's subtitles | `{tile}  its subtitle lines (QuipClipper's cues), in seconds into its audio file whatever its trim → {tile, title, cues: [{start, end, text, words? ([{start, end, text}]), aligned? (true: the words were placed by hand), added? (true: the line was added in the editor)}], cues_source ({kind, lang?, ...} or null), heard (how many lines overlap the trim), trim_start, trim_end}` (positional: `tile`) | read-only |
+| `tile.subtitlesSet` | Set a tile's subtitles | `{tile, cues ([{start, end, text, words?, aligned?, added?}] as tile.subtitles gives them, in seconds into the audio file), cues_source? ({kind, lang?, ...}), keepAligned? (default true: a line aligned by hand whose text matches a new line overlapping it stays as it is)}  lines that can't be read are skipped (at most 2000 lines of 500 characters, 200 words each) → {tile, lines, skipped, skipped_words, kept_aligned}` (positional: `tile`) | library (works with the app closed) |
+| `tile.transcribe` | Transcribe | `{tile \| tiles (default the selection), engine? (auto\|whisper\|quip\|apple; default settings.transcribe's), lang? (a language code, e.g. en; default the setting, else the engine's own), gaps? (default true: also add what's heard between a tile's subtitle lines)}  listens to each tile's whole sound: a tile without subtitles (or with only machine-made ones) gets the lines heard, marked machine-made {kind: machine, engine, model, lang}; a tile with subtitles keeps its text, and its lines without word timings get them from what was heard. With gaps, speech heard where none of its lines is spoken (a stretch of 0.5 s or more; a line's first or last word heard up to 0.25 s outside it is still that line's) becomes new lines, each marked machine: {kind: machine, engine, model, lang}, never over a known line; a later run replaces the gap lines it added, except ones changed by hand since. Each word's start is then moved onto the sound it starts on (up to 0.15 s); lines aligned by hand stay as they are. Runs in the background, one tile at a time; the CLI waits for it. With quip, the sound is sent to the connected QuipClipper (settings.transcribe's quipServer, else the first by address that takes uploads), which keeps none of it. Refused for a locked set, and with code unavailable when no engine can run (the reason says what to install) → {job, tiles, engine, sendsTo ("QuipClipper at …" when the audio leaves this computer, else null), skipped: [{tile, title, reason}]}; each tile's result (transcribe.status) has gaps: {added, replaced, kept}` (positional: `tile`) | library (works with the app closed) |
+| `tile.alignWords` | Align Words | `{tile, line? (from 1: listen to that line, a little either side, and time its words again even if it has some; default every line without word timings), engine?, lang?}  the line's text stays; its words take the times the engine heard them at, the ones it missed are spread between, and Reset puts the old timing back. A line aligned by hand is refused → as tile.transcribe` (positional: `tile`) | library (works with the app closed) |
+| `tile.subtitlesClear` | Remove a tile's subtitles | `{tile}  → {tile, removed (how many lines)}` (positional: `tile`) | library (works with the app closed) |
+| `tile.subtitleEdge` | Move a subtitle word's edge | `{tile, line (from 1), word (from 1), edge: start\|end, at (seconds into the file), split? (default false: a boundary shared with the next or previous word moves that word's edge too; true leaves it)}  words keep their order and at least 20 ms; marks the line aligned → {tile, line, start, end, text, aligned, provisional, words: [{start, end, text}]}` (positional: `tile`) | library (works with the app closed) |
+| `tile.subtitleNudge` | Nudge a subtitle word | `{tile, line, word, grip: start\|end\|word, by (seconds; the editor's arrow keys send 0.01, with Shift 0.1)}  moves its start edge, its end edge (a shared boundary moves the neighbour's edge too) or the whole word → the line` (positional: `tile`) | library (works with the app closed) |
+| `tile.subtitleWordMove` | Move a subtitle word | `{tile, line, word, at (its new start) \| by (seconds), split?}  keeps its length; shared boundaries take the neighbours' edges along (unless split), gaps stop it → the line` (positional: `tile`) | library (works with the app closed) |
+| `tile.subtitleTap` | Start a subtitle word here | `{tile, line, word, at (seconds into the file, e.g. where it's playing)}  the word's start moves there, or the whole word when that's past its end: tapping a line in while it plays → the line` (positional: `tile`) | library (works with the app closed) |
+| `tile.subtitleLineMove` | Move a subtitle line | `{tile, line, at (its new start) \| by (seconds)}  all its words with it, inside the audio → the line (and its new number: lines stay in time order)` (positional: `tile`) | library (works with the app closed) |
+| `tile.subtitleAutoAlign` | Auto-align a subtitle line | `{tile, line}  a suggestion: each word starts where a sound rises inside the line (the first and strongest rises when there are more than words; the even split when there are fewer); not marked aligned → the line, method: onsets\|strongest\|even` (positional: `tile`) | library (works with the app closed) |
+| `tile.subtitleReset` | Reset a subtitle line | `{tile, line}  its start, end and words back as the source gave them (or as they were before its first edit here) → the line, reset (false: it was never changed)` (positional: `tile`) | library (works with the app closed) |
+| `tile.subtitleWordText` | Retype a subtitle word | `{tile, line, word, text}  fixes its spelling; text with spaces splits it, its time shared out by length → the line` (positional: `tile`) | library (works with the app closed) |
+| `tile.subtitleWordJoin` | Join two subtitle words | `{tile, line, word}  the word and the next become one, spanning both → the line` (positional: `tile`) | library (works with the app closed) |
+| `tile.subtitleText` | Split a subtitle line again | `{tile, line, text? (new text for the line; a line break is \n)}  drops its word timings, so its words are spread evenly over it until they're aligned again → the line` (positional: `tile`) | library (works with the app closed) |
+| `tile.subtitleAdd` | Add a subtitle line | `{tile, text (a line break is \n), start? (seconds into the file, with end; or give at), end? (seconds into the file), at? (instead of start and end: its start; it lasts about 0.3 s a word, 0.8 to 6 s, stopping before the next line), words? (onsets (default): each starts where a sound rises inside it, as Auto-Align does \| even: spread evenly)}  a line made here, marked added: a new copy of the subtitles from their source keeps it. In the open editor it becomes the selected line → the line, method: onsets\|strongest\|even, lines (how many now)` (positional: `tile`) | library (works with the app closed) |
+| `tile.subtitleDelete` | Delete a subtitle line | `{tile, line}  removes it; a new copy from the source brings a line it has back → {tile, line, removed: {start, end, text, added}, lines (how many are left)}` (positional: `tile`) | library (works with the app closed) |
 | `tile.markerRemove` | Remove a marker | `{tile, marker (name or #n) \| all: true}` (positional: `tile`) | library (works with the app closed) |
 | `tile.playOn` | Play On | `{tile}  a tile looping its vamp section lets it go and plays on to the end (a press on a vamping tile does the same) → {tile, played_on}` (positional: `tile`) | running app |
 | `tile.release` | Play On (deprecated) | `{tile}  deprecated (D-156): the old name of tile.playOn → {tile, played_on, released}` (positional: `tile`) | running app |
@@ -223,7 +350,8 @@ An address that goes away (a tile removed, a smaller set) is sent once more as `
 | `tile.random` | Play a Random Tile | `{set? (default current; "*" for every set), color? (only tiles of this colour)}  every tile in the pool plays once before any repeats, so never the last pick; disabled, empty and action tiles are left out; the Random button (D-171); the status bar says what it played → {tile, title, left}` (positional: `set`) | running app |
 | `tile.preview` | Preview a tile | `{tile, from?, to? (seconds into the file: just that stretch, once, without its vamp, loop, fades or link; the editor's Play Selection)}  play it, or stop it quickly if it's sounding (the context menu's Play/Stop); with Preview to on and its device not open, nothing plays (code preview_unavailable), never on Main` (positional: `tile`) | running app |
 | `tile.render` | Export Audio | `{tile? \| tiles? (default the selection), path? (the file to write, or a folder for several tiles; without it the app opens the Export Audio window), format? (wav\|flac; default the path's extension, else wav), rate? (Hz, 8000-192000; default the clip's)}  the tile with trim, fades, volume, gain, speed, pitch and channel mix applied, once through (24-bit, stereo); runs in the background and the CLI waits for it; the library is untouched → {job, format, files, skipped}` (positional: `path`) | read-only |
-| `tile.list` | List tiles | `{set? (default current; "*" for all), query? (title or notes contain)}  → [{id, title, set, position, row, slot (counting blanks; column is the same), key, loop, solo, pausable, one_shot, hold, disabled, duration, ...}]` (positional: `set`) | read-only |
+| `tile.list` | List tiles | `{set? (default current; "*" for all), query? (the words a search finds, as tile.search matches them)}  → [{id, title, set, position, row, slot (counting blanks; column is the same), key, loop, solo, pausable, one_shot, hold, disabled, duration, ...}]` (positional: `set`) | read-only |
+| `tile.search` | Search tiles | `{query (words; every one must be found, in any order, ignoring case and accents), set? (default every set, the current one first)}  searches each tile's title, the name of the file it was made from, its notes and its subtitles → [{tile, title, set, position, matched: [{field: title\|file\|notes\|subtitles, text (the line that matched)}]}]` (positional: `query`) | read-only |
 | `tile.get` | Show a tile | `{tile}  → every setting of the tile` (positional: `tile`) | read-only |
 | `tile.add` | Add Sounds · ⌘O / Ctrl+O | `{paths? ([file] or file; without it the app opens a file picker), set?, at? (1-based position, joining the row of the tile there) \| row, slot? (that slot of the row: a blank one fills, one past the row's end opens blanks up to it, otherwise the slots from there move along) \| at? (the gap before this slot; default the row's end), newRow? (true: a new row at row)}  → {added: [id], errors}; files are copied in (AC-3, DTS and video converted with ffmpeg) in the background` (positional: `paths`) | library (works with the app closed) |
 | `tile.paste` | Paste Sounds | `{}  import files copied in a file manager (also ⌘/Ctrl+V outside text fields)` | running app |
@@ -242,6 +370,44 @@ An address that goes away (a tile removed, a smaller set) is sent once more as `
 | `tile.pictureClear` | Remove Picture | `{tile}` (positional: `tile`) | library (works with the app closed) |
 | `tile.send` | Also send to an output | `{tile, output (an output's name, or main), gainDb? (-24 to +24, on top of the tile's level; default 0)}  adds the send, or changes its level; the tile plays there too from its next start → the tile` (positional: `tile`) | library (works with the app closed) |
 | `tile.unsend` | Stop sending to an output | `{tile, output}  a tile with no sends left plays on Main` (positional: `tile`) | library (works with the app closed) |
+
+### set
+
+| Command | What it does | Parameters | Needs |
+|---|---|---|---|
+| `set.transcribe` | Transcribe Tiles Without Subtitles | `{set? (default current), engine?, lang?, gaps? (default false: also the tiles with subtitles from elsewhere, for the lines heard between theirs), ask? (the window asks first, naming the engine, where the audio is sent and, with a box to tick, how many tiles have subtitles whose gaps it could fill; then → {asked, set, tiles, subtitled, engine, sendsTo})}  tile.transcribe for every tile in the set that has a sound and no subtitles (with gaps, and every one whose subtitles aren't machine-made) → as tile.transcribe` (positional: `set`) | library (works with the app closed) |
+| `set.list` | List sets | `→ [{id, name, tiles, layout, grid (Settings > Grid layout), columns, rows (tiles per grid row, top to bottom), auto_advance, current}]` | read-only |
+| `set.create` | New Set · ⇧⌘N / Ctrl+Shift+N | `{name? (default "Set N"; the app then lets you type one)}  → {id}` (positional: `name`) | library (works with the app closed) |
+| `set.rename` | Rename Set | `{name? (without it the app edits the name in place), set? (default current)}` (positional: `name`) | library (works with the app closed) |
+| `set.duplicate` | Duplicate Set | `{set?}  → {id}` (positional: `set`) | library (works with the app closed) |
+| `set.delete` | Delete Set **(destructive)** | `{set?}  the last set can't be deleted` (positional: `set`) | library (works with the app closed) |
+| `set.select` | Select a set | `{set}` (positional: `set`) | library (works with the app closed) |
+| `set.next` | Next Set · ⌘] / Ctrl+CloseBracket | `{}  the set below the current one in the sidebar (stops at the last) → {id, name}` | library (works with the app closed) |
+| `set.prev` | Previous Set · ⌘[ / Ctrl+OpenBracket | `{}  the set above the current one (stops at the first) → {id, name}` | library (works with the app closed) |
+| `set.layout` | Set the layout | `{layout: grid\|list, set?}` (positional: `layout`) | library (works with the app closed) |
+| `set.columns` | Set the grid columns | `{columns (1-12), set?}  Fixed columns: the column count; Rows: the row size (how wide tiles get, and how many new sounds fill a row)` (positional: `columns`) | library (works with the app closed) |
+| `set.rows` | Even out rows | `{perRow (1-12) \| rows ([3, 8, …] or "3,8": tiles per row, top to bottom; tiles left over fill rows of the set's columns), set?}  perRow evens every row out and sets columns; both clear the blank slots → {rows}` (positional: `perRow`) | library (works with the app closed) |
+| `set.addBlank` | Insert a blank slot | `{row, slot (1-based: the blank goes before this slot; slots + 1 for the row's end), count? (default 1), set?}  an empty slot in a grid row, which stays put as tiles come and go around it; reading order skips it → {slots: ["xx.x", …] (x a tile, . a blank)}` (positional: `row`) | library (works with the app closed) |
+| `set.removeBlank` | Remove a blank slot | `{row, slot (1-based), set?}  the slots after it move up one → {slots}` (positional: `row`) | library (works with the app closed) |
+| `set.listMode` | List Playback Mode | `{mode: continuous\|queued, set?}  Continuous: a cue that ends on its own starts the next armed one; Queued: it waits for GO / Enter → {mode}` (positional: `mode`) | library (works with the app closed) |
+| `set.crossfade` | List Cross-Fade | `{seconds (0–5), set?}  Continuous: how long the next cue overlaps the end of the one before, one fading out as the other fades in (at most half of either) → {seconds}` (positional: `seconds`) | library (works with the app closed) |
+| `set.autoAdvance` | Auto-advance cues | `{on? (default: toggle), set?}  the same switch as set.listMode (on: continuous)` (positional: `on`) | library (works with the app closed) |
+| `set.notes` | Set notes | `{notes (text; empty clears), set?}  shown above the cue list` (positional: `notes`) | library (works with the app closed) |
+| `set.lock` | Lock Set | `{set? (default current), on? (default true)}  a locked set can't be changed: its tiles, their order and its settings stay as they are (every change is refused with code locked) and its tiles still play → {set, locked}` (positional: `set`) | library (works with the app closed) |
+| `set.unlock` | Unlock Set | `{set? (default current)}  → {set, locked}` (positional: `set`) | library (works with the app closed) |
+| `set.reassignKeys` | Reassign hotkeys by row | `{set?}  drops the keys set by hand: every pad takes its slot's key again (row 1: 1–=, row 2: q–], row 3: a–', row 4: z–/, rows 5–8: the same with alt+)` (positional: `set`) | library (works with the app closed) |
+| `set.import` | Import Set | `{path? (a .lsset set file, a .zip, a pack folder, or a Farrago export: a .farragoset folder or its zip; without it the app opens a file picker), ask? (the window asks first, as for a set file opened from the file manager; then → {asked, path}), raise? (with ask: bring the window to the front), useTheme? (a set file carrying a theme: true uses it now, false doesn't; without it the window asks)}  adds its sets after yours, and installs the theme it carries as a user theme, replacing one of the same name → {sets: [{id, name, tiles}], theme (null, or {id, name, base, path, replaced, used, asked, warnings}, or {error}), farrago? (a Farrago export: {imported: [title], skipped: [{title, reason}], dropped: [setting (n tiles)], warnings})}; missing or unreadable sounds are skipped, not fatal` (positional: `path`) | library (works with the app closed) |
+| `set.export` | Export Set | `{path? (a .lsset file to write; without it the app asks where), set? (default current), all? (every set)}  clips, pictures and every setting in one file, and the user theme in use → {path, sets, tiles, bytes, skipped, theme (its id, or null)}` (positional: `path`) | library (works with the app closed) |
+| `set.render` | Export Set Audio | `{folder? (made if missing; without it the app opens the Export Audio window), set? (default current), format?, rate?}  every tile with audio, as "NN Title.wav" in set order, never over an existing file → {job, format, files, skipped}` (positional: `folder`) | read-only |
+
+### transcribe
+
+| Command | What it does | Parameters | Needs |
+|---|---|---|---|
+| `transcribe.status` | Show transcriptions | `{job? (default every one)}  → {jobs: [{job, total, done, finished, cancelled, current ({tile, title, engine, fraction (0-1, or null while unknown)} or null), queued, results: [{tile, title, engine, model, lang, heard: {lines, words}, replaced, lines, kept_aligned, aligned: {lines, matched, placed, missed}, refined: {words, moved, mean_ms, max_ms}, changed}], errors: [{tile, title, error}]}], busy}` (positional: `job`) | read-only |
+| `transcribe.cancel` | Cancel Transcription | `{job? (default every one)}  stops the tile being transcribed and drops the ones waiting; nothing is changed → {cancelled (how many tiles)}` (positional: `job`) | library (works with the app closed) |
+| `transcribe.engines` | List transcription engines | `→ {setting (auto or an engine), uses (the engine tile.transcribe would use, or null), sendsTo (where it sends the audio, or null), reason (why none can run, with what to install), engines: [{engine, label, available, reason, servers? (quip: [{server, name, transcribes, reason, upload: {maxBytes, maxSeconds}, used, why}])}], apple ({permission: not-asked\|denied\|restricted\|allowed (null outside the app), locale, language, onDevice, canAsk} on macOS and iPadOS, else null; asking it never prompts)}  in auto's order: Apple Speech, whisper-cli, QuipClipper (only the ones this version has). Asks each connected QuipClipper whether it transcribes (GET /api/config) if it hasn't been asked yet` | read-only |
+| `transcribe.allowSpeech` | Allow Speech Recognition | `{}  macOS and iPadOS, in the app only: shows the system's Speech Recognition permission prompt if it hasn't been answered (the only thing that ever shows it, D-288), else changes nothing. Recognition stays on the device → {asked, permission (as it was), apple (as transcribe.engines), reason (why Apple Speech still can't run, or null)}` | running app |
 
 ### transport
 
@@ -348,34 +514,6 @@ An address that goes away (a tile removed, a smaller set) is sent once more as `
 |---|---|---|---|
 | `meter.clearClip` | Clear the clip light | `{}` | running app |
 
-### set
-
-| Command | What it does | Parameters | Needs |
-|---|---|---|---|
-| `set.list` | List sets | `→ [{id, name, tiles, layout, grid (Settings > Grid layout), columns, rows (tiles per grid row, top to bottom), auto_advance, current}]` | read-only |
-| `set.create` | New Set · ⇧⌘N / Ctrl+Shift+N | `{name? (default "Set N"; the app then lets you type one)}  → {id}` (positional: `name`) | library (works with the app closed) |
-| `set.rename` | Rename Set | `{name? (without it the app edits the name in place), set? (default current)}` (positional: `name`) | library (works with the app closed) |
-| `set.duplicate` | Duplicate Set | `{set?}  → {id}` (positional: `set`) | library (works with the app closed) |
-| `set.delete` | Delete Set **(destructive)** | `{set?}  the last set can't be deleted` (positional: `set`) | library (works with the app closed) |
-| `set.select` | Select a set | `{set}` (positional: `set`) | library (works with the app closed) |
-| `set.next` | Next Set · ⌘] / Ctrl+CloseBracket | `{}  the set below the current one in the sidebar (stops at the last) → {id, name}` | library (works with the app closed) |
-| `set.prev` | Previous Set · ⌘[ / Ctrl+OpenBracket | `{}  the set above the current one (stops at the first) → {id, name}` | library (works with the app closed) |
-| `set.layout` | Set the layout | `{layout: grid\|list, set?}` (positional: `layout`) | library (works with the app closed) |
-| `set.columns` | Set the grid columns | `{columns (1-12), set?}  Fixed columns: the column count; Rows: the row size (how wide tiles get, and how many new sounds fill a row)` (positional: `columns`) | library (works with the app closed) |
-| `set.rows` | Even out rows | `{perRow (1-12) \| rows ([3, 8, …] or "3,8": tiles per row, top to bottom; tiles left over fill rows of the set's columns), set?}  perRow evens every row out and sets columns; both clear the blank slots → {rows}` (positional: `perRow`) | library (works with the app closed) |
-| `set.addBlank` | Insert a blank slot | `{row, slot (1-based: the blank goes before this slot; slots + 1 for the row's end), count? (default 1), set?}  an empty slot in a grid row, which stays put as tiles come and go around it; reading order skips it → {slots: ["xx.x", …] (x a tile, . a blank)}` (positional: `row`) | library (works with the app closed) |
-| `set.removeBlank` | Remove a blank slot | `{row, slot (1-based), set?}  the slots after it move up one → {slots}` (positional: `row`) | library (works with the app closed) |
-| `set.listMode` | List Playback Mode | `{mode: continuous\|queued, set?}  Continuous: a cue that ends on its own starts the next armed one; Queued: it waits for GO / Enter → {mode}` (positional: `mode`) | library (works with the app closed) |
-| `set.crossfade` | List Cross-Fade | `{seconds (0–5), set?}  Continuous: how long the next cue overlaps the end of the one before, one fading out as the other fades in (at most half of either) → {seconds}` (positional: `seconds`) | library (works with the app closed) |
-| `set.autoAdvance` | Auto-advance cues | `{on? (default: toggle), set?}  the same switch as set.listMode (on: continuous)` (positional: `on`) | library (works with the app closed) |
-| `set.notes` | Set notes | `{notes (text; empty clears), set?}  shown above the cue list` (positional: `notes`) | library (works with the app closed) |
-| `set.lock` | Lock Set | `{set? (default current), on? (default true)}  a locked set can't be changed: its tiles, their order and its settings stay as they are (every change is refused with code locked) and its tiles still play → {set, locked}` (positional: `set`) | library (works with the app closed) |
-| `set.unlock` | Unlock Set | `{set? (default current)}  → {set, locked}` (positional: `set`) | library (works with the app closed) |
-| `set.reassignKeys` | Reassign hotkeys by row | `{set?}  drops the keys set by hand: every pad takes its slot's key again (row 1: 1–=, row 2: q–], row 3: a–', row 4: z–/, rows 5–8: the same with alt+)` (positional: `set`) | library (works with the app closed) |
-| `set.import` | Import Set | `{path? (a .lsset set file, a .zip, a pack folder, or a Farrago export: a .farragoset folder or its zip; without it the app opens a file picker), ask? (the window asks first, as for a set file opened from the file manager; then → {asked, path}), raise? (with ask: bring the window to the front), useTheme? (a set file carrying a theme: true uses it now, false doesn't; without it the window asks)}  adds its sets after yours, and installs the theme it carries as a user theme, replacing one of the same name → {sets: [{id, name, tiles}], theme (null, or {id, name, base, path, replaced, used, asked, warnings}, or {error}), farrago? (a Farrago export: {imported: [title], skipped: [{title, reason}], dropped: [setting (n tiles)], warnings})}; missing or unreadable sounds are skipped, not fatal` (positional: `path`) | library (works with the app closed) |
-| `set.export` | Export Set | `{path? (a .lsset file to write; without it the app asks where), set? (default current), all? (every set)}  clips, pictures and every setting in one file, and the user theme in use → {path, sets, tiles, bytes, skipped, theme (its id, or null)}` (positional: `path`) | library (works with the app closed) |
-| `set.render` | Export Set Audio | `{folder? (made if missing; without it the app opens the Export Audio window), set? (default current), format?, rate?}  every tile with audio, as "NN Title.wav" in set order, never over an existing file → {job, format, files, skipped}` (positional: `folder`) | read-only |
-
 ### render
 
 | Command | What it does | Parameters | Needs |
@@ -400,8 +538,9 @@ An address that goes away (a tile removed, a smaller set) is sent once more as `
 | `view.toggleEdit` | Toggle Edit Mode (deprecated) | `{}  deprecated (D-147): view.inspector → {open}` | running app |
 | `view.lockEdit` | Lock Edit Mode (deprecated) | `{on? (default: toggle)}  deprecated (D-147): locks or unlocks the current set (set.lock) → {set, locked}` (positional: `on`) | library (works with the app closed) |
 | `view.select` | Select a tile | `{tile? (none closes the inspector), add? (⌘-click: add it to the selection, or take it out), remove? (Alt-click: take it out of the selection; an unselected tile leaves the selection as it is), range? (Shift-click: every tile in the rectangle of slots, rows by columns, between the selected one and it, in its set; with add, ⌘-Shift-click: add the rectangle to the selection), columns? (with range: lay the set out in lines of this many instead of its rows, as Auto/Fixed columns show it; 1 = the run in set order), tiles? ([tile]: select these)}  several selected tiles edit together in the inspector → {selected}` (positional: `tile`) | running app |
-| `view.search` | Find Tiles · ⌘F / Ctrl+F | `{query? (title or notes contain it; every set, the current one first), play? (play the top hit and close), close?}  without parameters it opens the search box → {open, query, hits: [{tile, title, set}]}` (positional: `query`) | running app |
+| `view.search` | Find · ⌘F / Ctrl+F | `{query? (the search box's text; the board dims the tiles it doesn't find), clear? (empty the box; close is the old name), go? (go to hit #index: its set, the tile selected, its pad focused; the box empties), play? (play hit #index, or the first that can play; the box keeps its text), index? (from 1, default 1)}  without parameters it puts the keyboard in the search box → {open, query, hits: [{tile, title, set, position, matched: [{field, text}]}], went?, played?}` (positional: `query`) | running app |
 | `view.editor` | Edit Waveform · ⇧⌘E / Ctrl+Shift+E | `{tile? (default: the selected tile), open? (default: true with tile, else toggle)}  a full-window editor for the tile's trim, vamp and markers, in place of the board; selecting another tile closes it → {open, tile}` (positional: `tile`) | running app |
+| `view.editorWord` | Select a Subtitle Word | `{line? (with word), word? (from 1), grip? (start\|end\|word: what the arrow keys move; default start, or the grip already chosen; given alone, the selected word's), clear? (true: select no word)}  the word selected in the waveform editor's subtitle lane; with nothing, it reports → {tile, line, word, grip, text, start, end} \| {tile, selected: null}` | running app |
 | `view.editorSelect` | Select in the Editor | `{from, to (seconds into the file) \| clear: true}  the waveform editor's selection (dragging across the waveform), which Trim to Selection (tile.set trimStart/trimEnd), Vamp Selection (vampStart/vampEnd), Play Selection (tile.preview from/to) and view.editorZoom selection act on; with neither, it reports it; closing the editor clears it → {tile, selection: {from, to} \| null}` | running app |
 | `view.editorZoom` | Zoom the Editor | `{fit: true \| trim: true \| selection: true \| from, to (seconds into the file) \| by (2 zooms in, 0.5 out, around the cursor or the middle)}  what the waveform editor shows; trim and selection leave a little room either side → {tile, fit \| from, to \| by}` | running app |
 | `view.waveforms` | Show Waveforms | `{on? (default: toggle)}` (positional: `on`) | library (works with the app closed) |
@@ -476,6 +615,7 @@ An address that goes away (a tile removed, a smaller set) is sent once more as `
 | `settings.tileKeysAllSets` | Tile keys work in every set | `{on? (default: toggle)}  a tile's key plays it from any set: the current set's tile first, then the other sets in sidebar order → {on}` (positional: `on`) | library (works with the app closed) |
 | `settings.quipBadge` | Show new QuipClipper clips | `{on? (default: toggle)}  the status bar shows how many clips are new on the connected QuipClipper servers, asking them every minute while the QuipClipper window is closed; on by default (status.quip_new has the counts) → {on}` (positional: `on`) | library (works with the app closed) |
 | `settings.quipAskEachImport` | Ask before each QuipClipper import | `{on? (default: toggle)}  a QuipClipper link the system opens asks "Import …?" before importing, even from a connected server (links from a server that isn't connected always ask); off by default → {on}` (positional: `on`) | library (works with the app closed) |
+| `settings.transcribe` | Transcription settings | `{engine? (auto\|whisper\|quip\|apple), lang? (a language code like en; auto or "" for the engine's own), whisperModel? (a ggml model file for whisper-cli, e.g. ggml-base.en.bin; "" clears it; LEADSTINGER_WHISPER_MODEL wins), quipServer? (a connected QuipClipper to transcribe on; "" for the first, by address, that takes uploads)}  the app downloads no model and needs none until you transcribe → {engine, lang, whisperModel, quipServer}` | library (works with the app closed) |
 | `settings.windowSystem` | Choose the window system (Linux) | `{x11: bool}  applies at the next launch` (positional: `x11`) | library (works with the app closed) |
 
 ### quip

@@ -183,6 +183,11 @@ pub struct Store {
     orphans: HashSet<String>,
 }
 
+/// A path's file name, as `Tile::source` keeps it.
+fn file_name(p: &Path) -> Option<String> {
+    p.file_name().map(|n| n.to_string_lossy().into_owned())
+}
+
 fn unix_now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
@@ -499,6 +504,7 @@ impl Store {
     /// through ffmpeg when there is one ([`transcode::FFMPEG_EXTENSIONS`]).
     pub fn import_download(&mut self, fetch: crate::quip::Fetch, title: &str, set_idx: usize) -> Uuid {
         let file = PathBuf::from(fetch.file_name());
+        let source = file_name(&file);
         let plan = match transcode::find_ffmpeg() {
             Ok(ff) if transcode::prefers_ffmpeg(&file) => Plan::Convert(ff),
             _ => Plan::Copy,
@@ -517,6 +523,7 @@ impl Store {
         let tile = Tile {
             title: title.to_owned(),
             file: Some(name),
+            source,
             color: TileColor::nth(set.tiles.len()),
             ..Default::default()
         };
@@ -665,6 +672,7 @@ impl Store {
                     let tile = Tile {
                         title: p.file_stem().and_then(|s| s.to_str()).unwrap_or("Sound").to_owned(),
                         file: Some(name.clone()),
+                        source: file_name(p),
                         color: TileColor::nth(set.tiles.len() + new_tiles.len()),
                         ..Default::default()
                     };
@@ -690,8 +698,11 @@ impl Store {
             tile.start = 0.0;
             tile.end = None;
             tile.duration = Some(dur);
+            tile.clear_subtitles();
             // A recording carries no cover art.
             tile.art_checked = true;
+            // A recording isn't made from a file.
+            tile.source = None;
             tile.file.replace(name.clone())
         };
         let peaks = Arc::new(audio.peaks(PEAK_BUCKETS));
@@ -714,12 +725,14 @@ impl Store {
         let (old, old_art) = {
             let tile = self.library.tile_mut(tile_id).context("tile no longer exists")?;
             let old = tile.file.replace(name.clone());
+            tile.source = file_name(path);
             if tile.title == "Untitled" || old.is_none() {
                 tile.title = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Sound").to_owned();
             }
             tile.start = 0.0;
             tile.end = None;
             tile.duration = None;
+            tile.clear_subtitles();
             // The old file's cover art belongs to the old audio; check the new file instead.
             // A picture the user chose themselves stays.
             tile.art_checked = false;

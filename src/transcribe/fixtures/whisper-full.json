@@ -1,0 +1,297 @@
+{
+ "systeminfo": "",
+ "model": {
+  "type": "tiny",
+  "multilingual": false,
+  "vocab": 51864,
+  "audio": {
+   "ctx": 1500,
+   "state": 384,
+   "head": 6,
+   "layer": 4
+  },
+  "text": {
+   "ctx": 448,
+   "state": 384,
+   "head": 6,
+   "layer": 4
+  },
+  "mels": 80,
+  "ftype": 1
+ },
+ "params": {
+  "model": "ggml-tiny.en.bin",
+  "language": "en",
+  "translate": false
+ },
+ "result": {
+  "language": "en"
+ },
+ "transcription": [
+  {
+   "timestamps": {
+    "from": "00:00:00,000",
+    "to": "00:00:04,600"
+   },
+   "offsets": {
+    "from": 0,
+    "to": 4600
+   },
+   "text": " Welcome to the spring concert, please switch off your phones, and enjoy the music",
+   "tokens": [
+    {
+     "text": "[_BEG_]",
+     "timestamps": {
+      "from": "00:00:00,000",
+      "to": "00:00:00,000"
+     },
+     "offsets": {
+      "from": 0,
+      "to": 0
+     },
+     "id": 50363,
+     "p": 0.992375,
+     "t_dtw": -1
+    },
+    {
+     "text": " Welcome",
+     "timestamps": {
+      "from": "00:00:00,010",
+      "to": "00:00:00,460"
+     },
+     "offsets": {
+      "from": 10,
+      "to": 460
+     },
+     "id": 19134,
+     "p": 0.943874,
+     "t_dtw": -1
+    },
+    {
+     "text": " to",
+     "timestamps": {
+      "from": "00:00:00,470",
+      "to": "00:00:00,600"
+     },
+     "offsets": {
+      "from": 470,
+      "to": 600
+     },
+     "id": 284,
+     "p": 0.994359,
+     "t_dtw": -1
+    },
+    {
+     "text": " the",
+     "timestamps": {
+      "from": "00:00:00,600",
+      "to": "00:00:00,800"
+     },
+     "offsets": {
+      "from": 600,
+      "to": 800
+     },
+     "id": 262,
+     "p": 0.817817,
+     "t_dtw": -1
+    },
+    {
+     "text": " spring",
+     "timestamps": {
+      "from": "00:00:00,800",
+      "to": "00:00:01,200"
+     },
+     "offsets": {
+      "from": 800,
+      "to": 1200
+     },
+     "id": 6076,
+     "p": 0.570691,
+     "t_dtw": -1
+    },
+    {
+     "text": " concert",
+     "timestamps": {
+      "from": "00:00:01,200",
+      "to": "00:00:01,500"
+     },
+     "offsets": {
+      "from": 1200,
+      "to": 1500
+     },
+     "id": 10010,
+     "p": 0.996367,
+     "t_dtw": -1
+    },
+    {
+     "text": ",",
+     "timestamps": {
+      "from": "00:00:01,840",
+      "to": "00:00:01,840"
+     },
+     "offsets": {
+      "from": 1840,
+      "to": 1840
+     },
+     "id": 11,
+     "p": 0.43627,
+     "t_dtw": -1
+    },
+    {
+     "text": " please",
+     "timestamps": {
+      "from": "00:00:01,860",
+      "to": "00:00:02,210"
+     },
+     "offsets": {
+      "from": 1860,
+      "to": 2210
+     },
+     "id": 3387,
+     "p": 0.952728,
+     "t_dtw": -1
+    },
+    {
+     "text": " switch",
+     "timestamps": {
+      "from": "00:00:02,210",
+      "to": "00:00:02,510"
+     },
+     "offsets": {
+      "from": 2210,
+      "to": 2510
+     },
+     "id": 5078,
+     "p": 0.989555,
+     "t_dtw": -1
+    },
+    {
+     "text": " off",
+     "timestamps": {
+      "from": "00:00:02,590",
+      "to": "00:00:02,730"
+     },
+     "offsets": {
+      "from": 2590,
+      "to": 2730
+     },
+     "id": 572,
+     "p": 0.995786,
+     "t_dtw": -1
+    },
+    {
+     "text": " your",
+     "timestamps": {
+      "from": "00:00:02,830",
+      "to": "00:00:03,000"
+     },
+     "offsets": {
+      "from": 2830,
+      "to": 3000
+     },
+     "id": 534,
+     "p": 0.997702,
+     "t_dtw": -1
+    },
+    {
+     "text": " phones",
+     "timestamps": {
+      "from": "00:00:03,000",
+      "to": "00:00:03,150"
+     },
+     "offsets": {
+      "from": 3000,
+      "to": 3150
+     },
+     "id": 9512,
+     "p": 0.978482,
+     "t_dtw": -1
+    },
+    {
+     "text": ",",
+     "timestamps": {
+      "from": "00:00:03,480",
+      "to": "00:00:03,480"
+     },
+     "offsets": {
+      "from": 3480,
+      "to": 3480
+     },
+     "id": 11,
+     "p": 0.460467,
+     "t_dtw": -1
+    },
+    {
+     "text": " and",
+     "timestamps": {
+      "from": "00:00:03,480",
+      "to": "00:00:03,690"
+     },
+     "offsets": {
+      "from": 3480,
+      "to": 3690
+     },
+     "id": 290,
+     "p": 0.968178,
+     "t_dtw": -1
+    },
+    {
+     "text": " enjoy",
+     "timestamps": {
+      "from": "00:00:03,690",
+      "to": "00:00:04,020"
+     },
+     "offsets": {
+      "from": 3690,
+      "to": 4020
+     },
+     "id": 2883,
+     "p": 0.994734,
+     "t_dtw": -1
+    },
+    {
+     "text": " the",
+     "timestamps": {
+      "from": "00:00:04,060",
+      "to": "00:00:04,240"
+     },
+     "offsets": {
+      "from": 4060,
+      "to": 4240
+     },
+     "id": 262,
+     "p": 0.990679,
+     "t_dtw": -1
+    },
+    {
+     "text": " music",
+     "timestamps": {
+      "from": "00:00:04,240",
+      "to": "00:00:04,520"
+     },
+     "offsets": {
+      "from": 4240,
+      "to": 4520
+     },
+     "id": 2647,
+     "p": 0.995946,
+     "t_dtw": -1
+    },
+    {
+     "text": "[_TT_230]",
+     "timestamps": {
+      "from": "00:00:04,600",
+      "to": "00:00:04,600"
+     },
+     "offsets": {
+      "from": 4600,
+      "to": 4600
+     },
+     "id": 50593,
+     "p": 0.0691439,
+     "t_dtw": -1
+    }
+   ]
+  }
+ ]
+}

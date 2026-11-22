@@ -35,6 +35,7 @@ use url::Url;
 pub mod clips;
 pub mod discover;
 pub mod pair;
+pub mod transcribe;
 pub mod watch;
 
 /// Where QuipClipper serves a finished clip, under the server's base URL.
@@ -526,6 +527,8 @@ pub fn connect_with(data_dir: &Path, server: &str, how: Connection) -> Result<St
         all.servers.insert(server.clone(), Entry { token: how.token, added, seen, client_id: how.client_id, server_id: how.server_id });
         true
     })?;
+    // Whether it transcribes is asked again (src/quip/transcribe.rs).
+    transcribe::changed(data_dir, &server);
     Ok(server)
 }
 
@@ -537,6 +540,7 @@ pub fn disconnect(data_dir: &Path, server: &str) -> Result<bool, String> {
         had = all.servers.remove(&server).is_some();
         had
     })?;
+    transcribe::changed(data_dir, &server);
     Ok(had)
 }
 
@@ -622,14 +626,28 @@ impl std::fmt::Debug for Fetch {
 }
 
 fn agent() -> ureq::Agent {
+    agent_timed(Timeouts { connect: 10, response: 60, body: 30 * 60 })
+}
+
+/// How long a request may take, in seconds: to connect, for the answer to start, for
+/// its body to arrive.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Timeouts {
+    pub connect: u64,
+    pub response: u64,
+    pub body: u64,
+}
+
+fn agent_timed(t: Timeouts) -> ureq::Agent {
     use ureq::tls::{RootCerts, TlsConfig};
     ureq::Agent::config_builder()
         .max_redirects(0)
         .http_status_as_error(false)
         .user_agent(format!("{}/{}", crate::brand::APP_NAME, env!("CARGO_PKG_VERSION")))
-        .timeout_connect(Some(Duration::from_secs(10)))
-        .timeout_recv_response(Some(Duration::from_secs(60)))
-        .timeout_recv_body(Some(Duration::from_secs(30 * 60)))
+        .timeout_connect(Some(Duration::from_secs(t.connect)))
+        .timeout_send_body(Some(Duration::from_secs(t.body)))
+        .timeout_recv_response(Some(Duration::from_secs(t.response)))
+        .timeout_recv_body(Some(Duration::from_secs(t.body)))
         .tls_config(TlsConfig::builder().root_certs(RootCerts::PlatformVerifier).build())
         .build()
         .new_agent()
@@ -688,6 +706,53 @@ fn get_with(url: &str, token: &str, headers: &[(&str, &str)]) -> Result<ureq::ht
             Some(to) if same_server(&url, &to) => url = to,
             Some(to) => return Err(format!("the server sent the request on to {}, another host; it wasn't followed", origin(&to))),
             None => return Err(format!("the server answered HTTP {} without a usable Location", resp.status().as_u16())),
+        }
+    }
+    Err("the server redirected too many times".into())
+}
+
+/// A request with the token to a connected server (D-098): `GET` or `DELETE`, or `POST`
+/// with `body` (its content type and bytes), with QuipClipper's CSRF header. A redirect
+/// is followed only within the server, and a `POST` or `DELETE` only by a 307 or 308
+/// (which keep the method and body); the token never goes anywhere else. The answer is
+/// its status and JSON body (`null` when it isn't JSON), read up to `limit` bytes.
+pub(crate) fn send(method: &str, url: &str, token: &str, body: Option<(&str, &[u8])>, t: Timeouts, limit: u64) -> Result<(u16, Value), String> {
+    let agent = agent_timed(t);
+    let mut url = Url::parse(url).map_err(|e| format!("bad URL {url}: {e}"))?;
+    let basic = format!("Basic {}", base64(format!("api:{token}").as_bytes()));
+    let auth: Vec<(&str, &str)> = if token.is_empty() { Vec::new() } else { vec![("X-API-Key", token), ("Authorization", basic.as_str())] };
+    for _ in 0..=MAX_REDIRECTS {
+        let reached = |e: ureq::Error| format!("couldn't reach {}: {}", origin(&url), describe(&e));
+        let resp = match (method, body) {
+            ("POST", Some((kind, bytes))) => {
+                let mut req = agent.post(url.as_str()).header("X-Quipclipper", "1").header("Content-Type", kind);
+                for (k, v) in &auth {
+                    req = req.header(*k, *v);
+                }
+                req.send(bytes).map_err(reached)?
+            }
+            ("DELETE", None) | ("GET", None) => {
+                let mut req = if method == "GET" { agent.get(url.as_str()) } else { agent.delete(url.as_str()) }.header("X-Quipclipper", "1");
+                for (k, v) in &auth {
+                    req = req.header(*k, *v);
+                }
+                req.call().map_err(reached)?
+            }
+            _ => return Err(format!("can't send a {method} request")),
+        };
+        let status = resp.status().as_u16();
+        if !resp.status().is_redirection() || status == 304 {
+            let bytes = resp.into_body().with_config().limit(limit).read_to_vec().map_err(|e| format!("lost the connection to {} while it answered: {}", origin(&url), describe(&e)))?;
+            return Ok((status, serde_json::from_slice(&bytes).unwrap_or(Value::Null)));
+        }
+        if method != "GET" && status != 307 && status != 308 {
+            return Err(format!("the server answered HTTP {status} (a redirect); the request wasn't sent again"));
+        }
+        let to = resp.headers().get("location").and_then(|l| l.to_str().ok()).and_then(|l| url.join(l).ok());
+        match to {
+            Some(to) if same_server(&url, &to) => url = to,
+            Some(to) => return Err(format!("the server sent the request on to {}, another host; it wasn't followed", origin(&to))),
+            None => return Err(format!("the server answered HTTP {status} without a usable Location")),
         }
     }
     Err("the server redirected too many times".into())
@@ -1210,7 +1275,7 @@ fn import(c: &mut Controller, data_dir: &Path, id: &str, params: &Value) -> Resu
             return Ok(json!({"asked": true, "server": server, "connected": connected}));
         }
     }
-    start_import(c, data_dir, link, notes, raise)
+    start_import(c, data_dir, link, notes, None, raise)
 }
 
 /// A link (or a pair link's Connect) the window asks about before acting on it: whether to
@@ -1317,7 +1382,10 @@ fn pair_command(c: &mut Controller, data_dir: &Path, id: &str, params: &Value) -
 
 /// Download `link` into a new tile (in the background), once its server is known to be
 /// connected; a set link's set file is imported as a set ([`clips::add_set`]).
-pub(crate) fn start_import(c: &mut Controller, data_dir: &Path, link: Link, notes: Option<String>, raise: bool) -> Result<Value, CmdError> {
+///
+/// `subtitles` are the clip's from its sidecar when the caller has it (`quip.add`); with
+/// none, the sidecar is read from the server ([`clips::fetch_subtitles`]).
+pub(crate) fn start_import(c: &mut Controller, data_dir: &Path, link: Link, notes: Option<String>, subtitles: Option<clips::ClipSubtitles>, raise: bool) -> Result<Value, CmdError> {
     // Before anything goes over the network.
     let Some(token) = token_for(data_dir, &link.server).map_err(|e| err("failed", e))? else {
         return Err(err("not_connected", not_connected_message(&link.server)));
@@ -1340,7 +1408,7 @@ pub(crate) fn start_import(c: &mut Controller, data_dir: &Path, link: Link, note
         },
     };
     let title = link.tile_title();
-    let tile = c.store.import_download(Fetch::new(&link, token), &title, set_idx);
+    let tile = c.store.import_download(Fetch::new(&link, token.clone()), &title, set_idx);
     if let Some(t) = c.store.library.tile_mut(tile) {
         t.start = link.start.unwrap_or(0.0);
         t.end = link.end;
@@ -1348,8 +1416,15 @@ pub(crate) fn start_import(c: &mut Controller, data_dir: &Path, link: Link, note
             t.notes = n.clone();
         }
     }
+    let skipped = match subtitles {
+        Some(subs) => subs.apply(c, tile),
+        None => clips::fetch_subtitles(c, &link.server, &token, &link.clip, tile),
+    };
     let set = c.store.library.sets[set_idx].name.clone();
-    c.notify(format!("Downloading “{title}” from QuipClipper into {set}"));
+    c.notify(match skipped {
+        Some(s) => format!("Downloading “{title}” from QuipClipper into {set}. {s}"),
+        None => format!("Downloading “{title}” from QuipClipper into {set}"),
+    });
     if raise && c.has_window {
         c.effects.push(Effect::Raise);
     }

@@ -22,6 +22,10 @@ Originally made as a gift for Chris Fisher.
 ## Features
 
 - **Sets**: named boards in a sidebar. Sounds keep playing when you switch sets.
+- **Find**: a search box at the top of the window finds tiles in every set by title,
+  file name, notes or subtitles, every word in any order, ignoring case and accents. The
+  board dims what it doesn't find without moving anything; a list under the box shows
+  the hits from every set, and Enter goes to one (then Enter plays it).
 - **Grid and cue list**: the cue list plays its rows in order, one at a time: Enter
   plays the selected row (again stops it), each row's armed mark clears once it has
   played, Continuous (with a cross-fade) or Queued, Reset List, and cue and set notes.
@@ -33,6 +37,19 @@ Originally made as a gift for Chris Fisher.
 - **Shaping a clip**: gain above 0 dB and Normalise, fade shapes, speed (tape style),
   pitch (keeping the speed), markers to jump to, and a vamp section that loops until the
   next press (or GO) lets it play on to the end.
+- **Subtitles**: a clip from QuipClipper keeps the lines spoken in it. The waveform
+  editor shows them across the top of the waveform, word by word. Click a word and nudge
+  its start, end or the whole word with the arrow keys, with a guide line down through
+  the waveform; drag it onto its sound, snapping to where sounds start; or tap a line in
+  with Enter while it plays.
+- **Transcription**, only when you ask: **Transcribe** writes subtitles for a sound that
+  has none, so a search finds it by what's said in it, with each word's start moved onto
+  its sound; a tile that has subtitles keeps its text and gets word timings, and what's
+  said where none of its lines is gets added as machine-made lines. It
+  uses Apple's on-device speech recognition on a Mac or iPad (once you allow it in
+  Settings ▸ Subtitles; it never asks by itself), or
+  [whisper.cpp](#whispercpp-for-transcription) if you install it. Nothing is downloaded,
+  and neither sends your audio anywhere.
 - **Live control**: MIDI controllers with pad lights, OSC with feedback, system-wide keys,
   beds that duck under other tiles or your voice, recording into a tile, instant replay,
   outputs with per-tile sends (one tile to the house, a headphone cue mix and a stream,
@@ -65,7 +82,9 @@ Originally made as a gift for Chris Fisher.
 - **Menus**: the native menu bar on macOS and a menu bar in the window on Linux, built
   from one model, so every item and shortcut matches.
 - **Scriptable**: every action is a command for `leadstinger-cli`. It drives the running
-  app, or edits the library while the app is closed.
+  app, or edits the library while the app is closed, and a generated Python client
+  (`clients/python`) makes each one a method. `leadstinger-cli mcp` serves them to MCP
+  clients.
 - **Headless**: `leadstinger-cli serve` plays with no window, for a box with speakers
   and no screen.
 - **Export audio**: write tiles, or a whole set, to WAV or FLAC with the trim, fades,
@@ -126,6 +145,24 @@ it. Everything else works without it.
 LeadStinger looks for `$LEADSTINGER_FFMPEG`, then `ffmpeg` on PATH, then the usual
 Homebrew, MacPorts and Nix folders.
 
+### whisper.cpp, for transcription
+
+**Transcribe** (the inspector's Sound tab, the waveform editor, a tile's or a set's menu,
+or `leadstinger-cli tile.transcribe`) runs [whisper.cpp](https://github.com/ggml-org/whisper.cpp)'s
+`whisper-cli` on the sound, on this computer. It is optional and installed separately,
+with a model file you choose; LeadStinger downloads neither, and everything else works
+without them.
+
+- macOS: `brew install whisper-cpp`
+- Nix: `nix profile install nixpkgs#whisper-cpp`
+- A model: a ggml file such as `ggml-base.en.bin` (about 140 MB; `ggml-tiny.en.bin` is
+  75 MB and rougher, `ggml-small.en.bin` 470 MB and better), from whisper.cpp's
+  `models/download-ggml-model.sh`. Choose it in **Settings ▸ Subtitles**.
+
+LeadStinger looks for `$LEADSTINGER_WHISPER`, then `whisper-cli` (or `whisper-cpp`) on
+PATH, then the same folders as ffmpeg; `$LEADSTINGER_WHISPER_MODEL` overrides the model
+setting. `leadstinger-cli transcribe.engines` says whether it's ready and, if not, why.
+
 ### From source
 
 You need a Rust toolchain (1.95 or newer), a C++ compiler and libclang (the pitch shifter
@@ -141,6 +178,11 @@ To make a macOS app bundle in `dist/`:
 ```bash
 nix develop -c scripts/bundle-macos.sh
 ```
+
+Apple Speech transcription works only in that bundle (not in `cargo run`). To try it on
+a scratch library with the app in the background, `scripts/apple-speech-check.sh`
+reports the permission and the language without asking; `--allow` shows the system's
+permission prompt once and then transcribes a spoken clip.
 
 To make a Linux AppImage in `dist/` (needs Nix):
 
@@ -184,7 +226,7 @@ LEADSTINGER_DATA_DIR=/tmp/ls-demo LEADSTINGER_DEMO=1 cargo run --release
 | ⌘/Ctrl + Shift+N | new set |
 | ⌘/Ctrl + E | switch Perform and Edit |
 | ⌘/Ctrl + 1 / 2 | grid / list view |
-| ⌘/Ctrl + F | find tiles in every set (Enter plays the first) |
+| ⌘/Ctrl + F | the search box: Up/Down choose a hit, Enter goes to it, ⌘/Ctrl+Enter plays it, Esc clears |
 | ⌘/Ctrl + ] / [ | next / previous set |
 | ⌘/Ctrl + , | settings |
 | ⌘/Ctrl + = (or +) / − / 0 | zoom in / out / back to 100 % |
@@ -439,7 +481,17 @@ downloads or installs anything itself, so a Nix or AppImage install stays yours 
 update. **Settings ▸ Updates ▸ Check for updates at launch** does the same once each
 time the app opens and speaks up only about a newer version; it is off until you turn it
 on. That check, and the QuipClipper servers you connect yourself, are the app's only
-network calls (OSC and MIDI messages go only where you point them).
+network calls (OSC and MIDI messages go only where you point them). Transcription stays
+on this computer unless you choose QuipClipper: Apple Speech is used only with on-device
+recognition (a language without an on-device model is refused rather than sent to Apple),
+whisper-cli runs locally, and the app never downloads a model. Apple Speech works in the
+app (LeadStinger.app or the iPad app), not in a `cargo run` build or `leadstinger-cli
+--offline`, because macOS gives speech permission to apps. Transcription with QuipClipper
+sends the tile's audio to the QuipClipper server you connected, and only when you ask
+(Transcribe, or yes to Transcribe Tiles Without Subtitles…, which names the server
+first); the server sends back the words and keeps nothing it was sent. To know whether a
+server can transcribe, the app asks it (`/api/config`) when Settings opens, when you
+connect it, and before the first transcription.
 
 ## Your own themes
 

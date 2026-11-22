@@ -5,6 +5,7 @@
 // recursion limit can expand.
 #![recursion_limit = "256"]
 
+pub mod align;
 pub mod app;
 pub mod audio;
 pub mod background;
@@ -27,6 +28,7 @@ pub mod input;
 pub mod launcher;
 pub mod level;
 pub mod logic;
+pub mod mcp;
 pub mod mac_drop;
 pub mod menu;
 pub mod messages;
@@ -39,19 +41,25 @@ pub mod pads;
 pub mod paste;
 pub mod picture;
 pub mod pitch;
+pub mod policy;
+pub mod pyclient;
 #[cfg(target_os = "linux")]
 pub mod portal;
 pub mod render;
 pub mod rows;
+pub mod schema;
+pub mod search;
 pub mod quip;
 pub mod setfile;
 pub mod speech;
 pub mod starter;
 pub mod store;
+pub mod subtitles;
 pub mod theme;
 pub mod themes;
 pub mod titlebar;
 pub mod transcode;
+pub mod transcribe;
 pub mod update;
 pub mod wav;
 pub mod wayland_drop;

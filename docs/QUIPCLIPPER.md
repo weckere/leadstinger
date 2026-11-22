@@ -173,6 +173,67 @@ Every request goes to the connected server's own address, with its token: the li
 used. Listings are cached with their ETag and asked for again with `If-None-Match`, so an
 unchanged library costs the server a `304`.
 
+## Subtitles
+
+A clip's sidecar (the `meta` of its `/api/clips` entry) and each tile of a set file
+QuipClipper writes can carry the clip's **subtitles** (QuipClipper's D-109), and
+LeadStinger keeps them on the tile (SPEC.md, "Subtitles"):
+
+| Field | Meaning |
+|---|---|
+| `cues` | Every subtitle line that overlaps the cut, its padding included: `[{start, end, text}]`, seconds into the clip file (the frame of `meta.trim`), in time order. |
+| `cues[].words` | Optional, only when the source timed each word: `[{start, end, text}]`, in the same seconds. |
+| `cues[].machine` | Optional: the line is machine-made among subtitles that aren't (QuipClipper's auto lines). QuipClipper writes `true`; LeadStinger writes the engine, `{kind: machine, engine, model, lang}`, for the lines it adds in a tile's gaps (SPEC.md, "Transcription"), and reads either. |
+| `cues_source` | Where they came from: `{kind, lang, ...}`. |
+| `cue` | Still the one line the clip was cut for (the tile's title). |
+
+All of it is optional (older clips have none) and the contract stays version 1.
+
+- **Add** in the QuipClipper window and `quip.add` read them from the listing entry.
+- A **link** (and `quip.import`) carries no subtitles: once the tile is made, LeadStinger
+  finds the clip in the server's listing (the one the window fetched in the last two
+  minutes, else its folder's) and fills the tile from its sidecar, on a thread when the
+  window is open. A server or clip without them leaves the tile as it is; failing to find
+  the clip never stops the download.
+- A **set file** carries them per tile under the same names, whether QuipClipper or
+  LeadStinger wrote it.
+
+Lines and words that can't be read are skipped and the import's notice says how many;
+the tile always comes in. `quip.browse` and friends give each clip's line count as
+`subtitles`.
+
+## Transcription
+
+A connected QuipClipper that transcribes uploads can be LeadStinger's transcription
+engine (`quip`; SPEC.md, "Transcription"). Only when you ask, the tile's audio goes to
+**that server only**, with its token, and nothing is kept there:
+
+| Step | Request |
+|---|---|
+| Can it? | `GET /api/config`: `transcribe.upload` is `{max_bytes, max_seconds}` (else `false`, or no `transcribe` block: not offered). Its `server_name` names it in the app. |
+| Send | `POST /api/transcribe?lang=<code>` (no `lang` for the server's default), the body the tile's audio as mono 16-bit 16 kHz WAV (`Content-Type: audio/wav`), `X-API-Key` and `X-Quipclipper: 1` → `{job_id}`. A sound over the caps isn't sent. |
+| Follow | `GET /api/jobs/{job_id}` about twice a second: `queued`, `running` (its `progress`, "0:12 of 0:40 transcribed", is the tile's percentage), then `done` with `result: {cues, cues_source}` (lines with `words` where it has them; seconds into the sent audio), or `failed` with its `error`. |
+| Cancel | `DELETE /api/jobs/{job_id}`, on a thread, so Cancel stops at once; a job the upload starts after Cancel is deleted when its id comes back. |
+
+`cues` are read like a clip's subtitles; lines without `words` are split evenly, and
+every word's start is then moved onto its sound. For a tile that has subtitles already,
+the lines heard where none of them is spoken are added as machine-made lines, as
+QuipClipper's own gap mode does (it transcribes stretches of 4 s or more between a
+file's lines; a tile is short, so LeadStinger hears the whole sound and keeps what falls
+in gaps of 0.5 s or more, D-296). Machine-made lines record their source as `{kind:
+machine, engine: quipclipper, model, lang}` from `cues_source`: the tile's, for a tile
+that had none, or each added line's own `machine`.
+
+What goes wrong is said in one sentence: 413 (too long or too large, with the caps), 400
+(it couldn't read the audio), 422 (a language it doesn't hear), 429 (busy with other
+uploads), 503 (transcription off or not set up), 401/403 (connect it again), a job that
+disappears (404, the server restarted), a lost connection (six polls in a row), and any
+other answer. After 413, 503, 401/403, a lost connection or an unexpected answer the
+server is asked again whether it transcribes before it's offered next.
+
+A paired token with scopes needs QuipClipper's `transcribe` scope; LeadStinger asks for a
+full token when it pairs, which covers it.
+
 ## Pairing
 
 The pairing contract is QuipClipper's `quipclipper.pair/1` (its docs/API.md, Pairing):
@@ -240,7 +301,9 @@ advertising off: an advertisement tells the whole local network it's there.
   ask *"Import from QuipClipper?"*, even from a connected server.
 - **http and https only**, and redirects are followed only within the same server (and
   from http to https on the same host), at most five; a redirect to another host is
-  refused. Pairing's requests follow no redirect at all.
+  refused. Pairing's requests follow no redirect at all. A transcription upload (and its
+  cancel) follows only a 307 or 308 on the same server, which keep the body; any other
+  redirect is refused rather than turned into a GET.
 - **At most 1 GB** per clip; a web page or JSON where a clip should be is refused.
 - **The tokens** are kept in `quip-servers.json` in the library's data folder, readable
   only by you (0600; tightened again if something loosens it), never in `Library.json` or

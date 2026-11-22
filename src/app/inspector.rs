@@ -60,7 +60,7 @@ impl StingerApp {
         let t = Tokens::get(ui.ctx());
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            ui.label(RichText::new(title).small().strong().weak());
+            theme::section_head(ui, title);
             ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                 let hide = theme::name(theme::small_button(ui, "🗙"), "Hide inspector");
                 if theme::hint_keys(hide, "Hide the inspector, giving the board its room", "⌘/Ctrl+E").clicked() {
@@ -155,7 +155,7 @@ impl StingerApp {
         let resp = theme::hint(theme::small_button(ui, label), "The picture shown on the tile: choose one, or how it sits (also drop an image file onto the tile)");
         egui::Popup::from_toggle_button_response(&resp).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).show(|ui| {
             ui.set_width(300.0);
-            ui.label(RichText::new("PICTURE").small().strong().weak());
+            theme::section_head(ui, "PICTURE");
             self.picture_editor(ui, t, actions);
         });
     }
@@ -505,8 +505,13 @@ impl StingerApp {
         });
         if let Some((labels, downmix)) = self.ctl.store.audio(t).and_then(|a| a.native.as_ref().map(|n| (n.labels.clone(), n.downmix.clone()))) {
             ui.separator();
-            ui.label(RichText::new("CHANNELS").small().strong().weak());
+            theme::section_head(ui, "CHANNELS");
             routing::channels(ui, t, &labels, &downmix);
+        }
+        if t.action.is_none() && t.file.is_some() {
+            ui.separator();
+            let locked = self.ctl.store.library.locate(t.id).is_some_and(|(si, _)| self.ctl.store.library.sets[si].locked);
+            subtitles_list(ui, t, &self.ctl, locked, actions);
         }
     }
 
@@ -536,7 +541,7 @@ impl StingerApp {
             ui.end_row();
         });
         ui.separator();
-        ui.label(RichText::new("MESSAGES").small().strong().weak());
+        theme::section_head(ui, "MESSAGES");
         self.messages_editor(ui, orig, actions);
     }
 
@@ -620,6 +625,11 @@ impl StingerApp {
             parts.push(format!("{} kHz", a.sample_rate as f32 / 1000.0));
             parts.push(a.native.as_ref().map_or_else(|| "stereo".to_owned(), |n| format!("{} channels", n.labels.len())));
             parts.push(format_clock(a.duration(), true));
+        }
+        match t.subtitles.len() {
+            0 => {}
+            1 => parts.push("1 subtitle".to_owned()),
+            n => parts.push(format!("{n} subtitles")),
         }
         parts.join(" · ")
     }
@@ -725,11 +735,11 @@ impl StingerApp {
                     t.disabled = !t.disabled;
                 }
                 ui.separator();
-                ui.label(RichText::new("CUE").small().strong().weak());
+                theme::section_head(ui, "CUE");
                 theme::hint(theme::name(notes_editor(ui, &mut t.notes, "Notes, shown in the cue list"), "Notes"), "Notes for this cue, shown under its title in the cue list and in search");
                 cue_link_editor(ui, &mut t);
                 ui.separator();
-                ui.label(RichText::new("CONTROL").small().strong().weak());
+                theme::section_head(ui, "CONTROL");
                 egui::Grid::new("action-control").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
                     self.hotkey_rows(ui, &t, actions);
                     ui.label("Pads, keys");
@@ -965,6 +975,42 @@ impl FooterButton {
 /// The volume, one slider across the column (`mixed` for a selection that differs), with
 /// the Mute speaker beside it (`muted`, `None` when a selection is mixed; D-251). Returns
 /// the slider and whether Mute was clicked.
+/// A tile's subtitles, read only (D-260): each line with the time it starts in the file;
+/// lines the trim leaves out are dimmed, not hidden, since a wider trim plays them. The
+/// header names the source (machine-made ones say so) and has Transcribe (D-277).
+fn subtitles_list(ui: &mut Ui, t: &Tile, ctl: &crate::controller::Controller, locked: bool, actions: &mut Vec<Action>) {
+    let tokens = Tokens::get(ui.ctx());
+    let source = t.subtitles_source.as_ref().map(crate::transcribe::source_label);
+    ui.horizontal(|ui| {
+        // The theme's dim text, not egui's weak: Panel draws small strong weak text black.
+        let head = ui.label(RichText::new("SUBTITLES").small().strong().color(tokens.text_dim));
+        theme::hint(head, "The lines spoken in this clip, from QuipClipper, a set file or a transcription; times are in the sound file");
+        if let Some(a) = super::transcribe_ui::transcribe_button(ui, ctl, t, locked) {
+            actions.push(a);
+        }
+    });
+    if let Some(s) = source {
+        ui.add(egui::Label::new(RichText::new(s).small().color(tokens.text_dim)).wrap());
+    }
+    if t.subtitles.is_empty() {
+        ui.label(RichText::new("None yet. Transcribe writes them from the sound, so a search finds this tile by what's said in it.").small().color(tokens.text_dim));
+        return;
+    }
+    let end = t.end.or(t.duration).unwrap_or(f64::INFINITY);
+    // The inspector scrolls, so a long list needs no scroll area of its own.
+    egui::Grid::new("subtitles-grid").num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
+        for line in &t.subtitles {
+            let heard = line.end > t.start && line.start < end;
+            let colour = if heard { tokens.text } else { tokens.text_dim };
+            ui.label(RichText::new(format_clock(line.start, true)).small().monospace().color(tokens.text_dim));
+            let text = ui.add(egui::Label::new(RichText::new(&line.text).color(colour)).wrap());
+            let when = format!("{} to {} in the file{}", format_clock(line.start, true), format_clock(line.end, true), if heard { "" } else { ", outside the trim" });
+            theme::hint(text, when);
+            ui.end_row();
+        }
+    });
+}
+
 fn volume_slider(ui: &mut Ui, volume: &mut f32, mixed: bool, muted: Option<bool>) -> (egui::Response, bool) {
     ui.horizontal(|ui| {
         ui.label("Volume");

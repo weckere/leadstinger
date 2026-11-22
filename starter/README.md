@@ -78,6 +78,8 @@ Tile fields:
 | `trim_start`, `trim_end` | seconds into the file (`trim_end` left out: to the end) |
 | `vamp` | `[start, end]` seconds into the file: loops until the next press (or GO) lets it play on |
 | `markers` | `[{"name": "Outro", "at": 42.5}]`: points to jump to (seconds into the file) |
+| `cues` | the clip's subtitles, as QuipClipper writes them: `[{"start": 0.6, "end": 1.6, "text": "Don't get attached", "words": [{"start": 0.6, "end": 0.8, "text": "Don't"}, …]}]`, seconds into the file, in time order. `words` only when the source timed each word; `"aligned": true` on a line whose words were placed by hand in LeadStinger. Lines that can't be read are skipped, never the tile |
+| `cues_source` | where they came from: `{"kind": "srt", "lang": "en", …}`; other fields are kept as they are |
 | `picture` | an image for the tile, relative to the pack folder |
 | `picture_layer`, `picture_fit`, `picture_opacity` | `underlay`/`overlay`, `fill`/`fit`, 0–1 |
 

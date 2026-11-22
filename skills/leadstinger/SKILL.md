@@ -100,10 +100,37 @@ Relative paths are resolved where you run the command.
 ## Scripts and events
 
 ```bash
-leadstinger-cli run show.jsonl               # one {"command": id, "params": {...}} per line; stops at the first failure
+leadstinger-cli run show.jsonl               # one {"command": id, "params": {...}} per line, as one undo step (Script)
+leadstinger-cli run --dry-run show.jsonl     # what it would change to sets and tiles; changes nothing
 leadstinger-cli run - < show.jsonl           # from stdin; --keep-going to continue past failures
 leadstinger-cli watch                        # event lines: tile.started/stopped/finished, cue.changed, ...
 ```
+
+A script is one batch: nothing else acts between its steps, and if a step fails it stops
+and its changes to sets and tiles are put back (`--keep-going` keeps the steps that
+worked). For anything that touches more than a few tiles, prefer one script over many
+separate commands, and run it with `--dry-run` first.
+
+When the work needs logic (loops over tiles, decisions on what `tile.list` returns), write
+Python with the generated client instead of many shell calls: in a checkout it's
+`clients/python/leadstinger.py` (`PYTHONPATH=clients/python`); anywhere else,
+`leadstinger-cli commands --python > /tmp/leadstinger.py` writes the one that matches the
+installed CLI.
+
+```python
+import leadstinger
+with leadstinger.connect() as ls:          # the app, else the library; safe=True for --safe
+    tiles = ls.tile.list("Show")
+    with ls.batch(dry_run=True) as d:      # look first ...
+        for t in tiles:
+            d.tile.set(t["id"], title=t["title"].strip())
+    print(d.result["changes"])
+    with ls.batch() as b:                  # ... then the same steps for real, one undo step
+        for t in tiles:
+            b.tile.set(t["id"], title=t["title"].strip())
+```
+
+A failing command raises `leadstinger.Error` with `code`, `message` and `candidates`.
 
 ## Exit codes
 

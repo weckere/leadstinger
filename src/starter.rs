@@ -209,6 +209,14 @@ pub(crate) struct PackTile {
     /// An action tile (with `file` empty): what it does to other tiles in the file.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<PackAction>,
+    /// Its subtitles, as QuipClipper writes them: `[{start, end, text, words?}]` in
+    /// seconds into the clip file (src/subtitles.rs). Read leniently, so a bad line is
+    /// skipped and the tile still comes in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cues: Option<Value>,
+    /// Where they came from: `{kind, lang?, ...}`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cues_source: Option<Value>,
 }
 
 /// An action tile's action. Its targets name tiles by position, since ids don't travel.
@@ -525,6 +533,14 @@ pub(crate) fn import_set(store: &mut Store, dir: &Path, gs: &PackSet, what: &str
                 .map(|s| s.trim().to_owned())
                 .collect()
         };
+        if let Some(cues) = &gt.cues {
+            let parsed = crate::subtitles::parse_lines(cues);
+            if let Some(problem) = parsed.problem() {
+                eprintln!("{slug}: {what} {whose}: {problem}");
+            }
+            t.subtitles = parsed.lines;
+            t.subtitles_source = gt.cues_source.as_ref().and_then(crate::subtitles::parse_source).filter(|_| !t.subtitles.is_empty());
+        }
         t.on_start = messages(&gt.on_start, "start");
         t.on_stop = messages(&gt.on_stop, "stop");
         t.notes = gt.notes.clone();

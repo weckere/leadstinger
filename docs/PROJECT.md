@@ -1971,7 +1971,383 @@ Each decision with its reasoning and the alternatives that were turned down.
 
 **Alternatives:** A with the trapezoid kept in the 16/32 twin (muddy at 16 px: the trapezoid and hubs merge); A with filled hub dots in the twin (strong at 16 px, but at 32 px reads as a dumbbell, not a cassette); B dark (flat amber cassette with peach hubs on the dark plate: reads well but keeps D-257's look, not QuipClipper's); B amber (dark flat cassette on amber: heavy, and the peach window smears to grey at 16 px); C dark (A inverted, amber strokes on the dark plate: easiest to tell from QuipClipper but loses the amber-square family look the maintainer asked for); C solid (a dark filled glyph with the window cut out: busy, the cut-out fights the hub rings; dropped after the first render).
 
-18 decisions about private infrastructure and the gift edition are left out of the public snapshot: D-013, D-015, D-023, D-030, D-031, D-033, D-036, D-037, D-038, D-130, D-137, D-138, D-139, D-162, D-174, D-186, D-242, D-244.
+### D-260: A tile's subtitles ('titles', the maintainer's word) are stored on the tile as QuipClipper's contract shapes them: cues = ordered [{start, end, text, words?}] in seconds into the tile's audio file (the frame of trim, markers, vamp; independent of trim, speed and pitch), cues_source = {kind, lang?, ...the rest kept}. Library.json, .lsset tiles and QuipClipper sidecars all use those field names, so one reader (src/subtitles.rs parse_lines/parse_source) handles all three. In code and UI they are 'subtitles' (Tile.subtitles: Vec<SubtitleLine>, Tile.subtitles_source), never 'title' (the tile's name) or 'cue' (a cue-list step). A tile without them serializes as before (both skipped when empty).
+
+*2026-11-16*
+
+**Why:** One shape everywhere means a QuipClipper set file and a LeadStinger one read identically and the contract (quipclipper D-109) needs no translation; distinct code names avoid confusion with Tile.title and the cue list.
+
+**Alternatives:** LeadStinger's own field names on disk with a translation layer (two shapes to keep in step); calling them 'titles' in code (clashes with Tile.title); 'cues' in code (clashes with the cue list)
+
+### D-261: Hand alignment is stored in the same words list, flagged per line: SubtitleLine.aligned = true means its words (and the line's start/end around them) were placed by hand in LeadStinger. Word times are seconds into the audio file like the lines. A new copy of the subtitles from a source (tile.subtitlesSet by default, a QuipClipper refetch) goes through subtitles::merge, which keeps every aligned line whose text matches an incoming line overlapping it within 1 s; keepAligned:false replaces everything. aligned is a LeadStinger extension written into .lsset too; QuipClipper never writes it, and it is only true on a line with words.
+
+*2026-11-16*
+
+**Why:** The editor (next lane) needs words to drag and a way to tell its work from the source's so a re-import cannot silently undo it; a per-line flag is the unit the editor works in, and one words list keeps readers (search, playback captions) simple.
+
+**Alternatives:** A second per-line list (source words and aligned words side by side): more to store and every reader must pick one; a per-word flag: the editor aligns a line at a time, so a line flag is enough; never re-import onto a tile: loses QuipClipper corrections
+
+### D-262: Subtitles on copies and edits: Duplicate, tile.copy (alt-drag copy) and set export/import carry them (the copy plays the same file). Replace Audio and Record into a tile clear them and their source (they describe the old audio); undo brings them back. A trim change keeps them all: they are in file time, and the inspector dims lines outside the trim rather than dropping them, so widening the trim again shows them.
+
+*2026-11-16*
+
+**Why:** Subtitles describe an audio file, not a tile's settings, so they follow the file: copies share it, a replacement doesn't.
+
+**Alternatives:** Clearing lines outside a new trim (loses data a wider trim needs); keeping subtitles on Replace Audio (they would be wrong for the new sound)
+
+### D-263: The search box lives at the top of the window: in Console's toolbar after the wordmark (a field when the counter keeps its full width beside it, else a magnifier key; while in use a field at any width, Random and the meter giving way), and in a black gap cut into Panel's top bar before the title (a magnifier in narrow windows; while in use the compact title gives way). Main window only; set windows have none.
+
+*2026-11-16*
+
+**Why:** The maintainer asked for a box at the top. The live countdown matters more than an idle field, so the field takes only what the counter leaves; Panel's bar already has a title gap, so a second gap keeps its look. At 720 px neither header has room for an idle field.
+
+**Alternatives:** A bar above the board (the old Find); always-wide field that pushes the counter out; a floating spotlight window
+
+### D-264: Search matching: a query is words; a tile matches when every word appears in its searchable text, any order, case- and accent-insensitive (Latin-1/Extended-A folding, combining marks dropped). The text is one function, search::searchable(tile): title, the original file name (new Tile.source, set on import/replace/QuipClipper download), notes lines, and (to add) titles lines. Every set, current first then sidebar order.
+
+*2026-11-16*
+
+**Why:** Media files are stored under UUIDs, so the file name has to be kept to be searchable. One function keeps the titles-store merge to a few lines. Hand-rolled folding avoids a new dependency.
+
+**Alternatives:** substring of the whole query (old Find); unicode-normalization crate; fuzzy matching
+
+### D-265: A search never rearranges the board: the shown set's unmatched tiles are dimmed in place, and a list under the box (while it has the keyboard) shows hits from every set with the line that matched and a play key. Enter goes to the hit (its set, selected, revealed, pad focused; box empties), Cmd/Ctrl+Enter or the play key plays it and keeps the search, Esc empties the box and returns the keyboard to the board; nothing stops. Replaces the old Find, which swapped the board for the hits and played the first on Enter.
+
+*2026-11-16*
+
+**Why:** Live use: muscle memory depends on pads staying put, and Enter playing an unseen first hit is risky; going to the tile then Enter to play is two deliberate keys.
+
+**Alternatives:** keep filtering the board; filter plus list; Enter plays the top hit
+
+### D-266: Commands: tile.search {query, set?} (Query, offline) returns [{tile, title, set, position, matched:[{field, text}]}]; view.search keeps Cmd/Ctrl+F and gains clear (close kept as an alias), go and play with index; tile.list's query uses the same matcher.
+
+*2026-11-16*
+
+**Why:** One command per GUI action family keeps the menu and CLI as they were; a Query command lets scripts search without the app.
+
+**Alternatives:** separate search.focus/search.set/search.clear commands
+
+### D-267: Subtitle lane in the waveform editor: a lane under the waveform (50 pt, 66 on iOS) only for tiles with subtitles, on the waveform's time axis. Line bars on top; word blocks once a line has 16 pt per word, else the line's text. Three looks: dashed = provisional even split (line.words empty), tile colour = words from the source (or an auto-align suggestion), trim yellow = placed by hand (aligned). Lines outside the trim dimmed to 35%; while playing, the current line's bar and current word are drawn in the playhead colour. Onsets are short ticks along the lane's bottom. Selection tools sit under the editor buttons (word text, Start at Playhead, Join Next, Auto-Align Line, Reset Line, line text, Split Again). UI in src/app/subtitle_lane.rs.
+
+*2026-11-16 · M22*
+
+**Why:** A lane keeps words readable without covering the waveform; the same View maps both, so alignment is exact at any zoom. Dashed vs filled vs yellow makes guess/source/hand distinguishable at a glance in both themes (the Console accent was too close to the cyan tile colour). Ticks at the bottom so they don't read as word edges.
+
+**Alternatives:** Words drawn over the waveform (hides the sound being aligned to); a separate panel (loses the shared time axis); accent colour for hand-aligned (indistinguishable in Console)
+
+### D-268: Subtitle drag rules and snapping (src/align.rs): edges, whole words and whole lines drag; a shared boundary moves both words unless Shift (split); words keep order, never overlap, are at least 20 ms; a word moved whole takes shared neighbours' edges along and stops at gaps; line start/end follow first/last word; everything stays in 0..duration; moving anything marks the line aligned. A drag previews and sends one command when it ends (one undo step); lines are re-sorted by start and the new number returned. Snapping goes to onsets within 7 pt (14 on touch), Alt disables, the editor's Snap box governs both. Onsets: mono power every 5 ms, a rise of >=9 dB over 30 ms, louder than -55 dBFS and within 30 dB of the loudest point in +-1 s, placed where the rise first passes +3 dB, >=60 ms apart; hop grid fixed to the file so a stretch gives the same onsets; computed once per editor open. Keyboard on a focused word: Left/Right start 10 ms (Shift 100), Cmd/Ctrl end, Alt whole word; Enter = tile.subtitleTap at the playhead or cursor and focus the next word; edges/line bars use Sense::DRAG so only words are Tab stops.
+
+*2026-11-16 · M22*
+
+**Why:** These are the rules the brief asked for, made precise; an energy-rise onset finder is deterministic, dependency-free and finds >=80% of word starts on the synth's speech within 50 ms in tests. Snapping to onsets rather than zero crossings because the target is where a word is heard to start.
+
+**Alternatives:** Spectral-flux onsets (more code, no gain on the test speech); zero-crossing snapping (wrong target); Ctrl for split (clashes with Ctrl+arrow on Linux)
+
+### D-269: Auto-align a subtitle line is a suggestion: onsets from 100 ms before the line's start to its end; exactly one per word -> words start on them (method onsets); more -> the first plus the strongest rises of the rest (strongest); fewer -> the even split (even). Each word runs to the next word's start, the last to the line's end. Never marked aligned, so a re-import replaces it unless a word is then moved by hand.
+
+*2026-11-16 · M22*
+
+**Why:** The brief said fall back when counts disagree; speech gives syllable onsets, so more-than-words is the common case and the strongest-rise pick keeps the step useful instead of always falling back. Fewer-than-words has no honest guess beyond the even split.
+
+**Alternatives:** Fall back whenever counts differ (rarely useful on real speech); dynamic programming over word lengths (more guessing than the data supports)
+
+### D-270: Reset to source timing: SubtitleLine gains an optional source_timing {start, end, words?}, written by the first editor change to a line (any edit command), read leniently, carried by libraries and set files; tile.subtitleReset restores it and clears aligned and source_timing. A LeadStinger-only field like aligned. Text edits on a line without word timings change only the text (no words are invented); tile.subtitleText drops word timings (the even split shows again).
+
+*2026-11-16 · M22*
+
+**Why:** Line start/end follow the words, so once a line is moved its source span is lost; resetting honestly needs it stored. Optional and skipped when empty, so old libraries and QuipClipper's cues are unchanged.
+
+**Alternatives:** Reset to the even split over the current span (not the source timing); re-fetch from QuipClipper (needs the server, and per-line)
+
+### D-271: Search box Enter goes to the highlighted tile (its set, selected, pad focused; a second Enter plays it); Cmd/Ctrl+Enter or a row's play key plays at once. Confirms D-265's keys.
+
+*2026-11-16*
+
+**Why:** The maintainer chose option A (2026-11-16): seeing the tile before it sounds is worth one extra key in a show; Cmd+Enter covers the quick case.
+
+**Alternatives:** B: Enter plays, a modifier goes (the old Find); C: Enter plays with one hit, goes with several
+
+### D-272: In a narrow Console window the countdown (after Random and the meter) may give way to the search field while it is in use; it comes back when the box is empty and has left the keyboard. Confirms D-263.
+
+*2026-11-16*
+
+**Why:** The maintainer chose option A (2026-11-16): the loss is temporary and only while typing; Stop All, Fade All, Pause All and Settings never give way.
+
+**Alternatives:** B: the countdown never gives way (field shrinks or opens below the toolbar); C: the countdown shrinks to a compact time
+
+### D-273: Re-import keeps a line whose text was edited in LeadStinger by its source timing: subtitles::merge keeps a current line in place of an incoming one when it is aligned with matching text and overlapping (as before, D-261), or when it has source_timing within 50 ms of the incoming line's start and end and its text differs (a spelling fixed), aligned or not. An auto-aligned suggestion with unchanged text is still replaced (D-269).
+
+*2026-11-16 · M22*
+
+**Why:** The maintainer agreed (2026-11-16) that a spelling fix must not cost the alignment; source_timing (D-270) is exactly the source's span, so it identifies the line even after the text changed.
+
+**Alternatives:** Fuzzy text matching (guesses); marking any text edit aligned (would also keep lines only retyped, but loses the text-vs-source distinction)
+
+### D-274: Arrow keys on subtitle words: a click (or drag) on a word selects it and gives it keyboard focus at once. A grip says what Left/Right move: the start edge (default), the end edge or the whole word; Up/Down step through start, word, end; a click on an edge handle picks that edge; the tools row has a three-way Start/Word/End toggle. Left/Right move 10 ms, Shift 100 ms (fine and coarse). Enter starts the word at the playhead and moves on. The selection lives in the controller: view.editorWord {line, word, grip | clear}; each nudge is tile.subtitleNudge {tile, line, word, grip, by} (one undo step). Replaces round 1's Cmd/Alt+arrow scheme.
+
+*2026-11-16 · M22*
+
+**Why:** The maintainer could not nudge in round 1: egui gives a clicked widget no keyboard focus, so arrows after a click went nowhere. One visible grip with Up/Down to switch is easier to discover than modifier combinations, and Cmd+arrow clashes with text-navigation habits. Up/Down are not pad keys and a focused control keeps the arrows from the board.
+
+**Alternatives:** Modifier keys per edge (round 1, undiscoverable); [ and ] for edges (they are pad keys)
+
+### D-275: The subtitle lane sits at the top of the waveform, under the time ruler (the maintainer's ask), inside the waveform's frame; the trim handles start under it. Guide lines: the selected word's start and end run down the full height of the waveform, the edge the arrows move (or being dragged) solid, the other dashed; in a fixed bright green (#5CF08A) over a dark halo in both themes, with a small tag at the bottom (start/end). Word labels are pinned to the visible part of a block (a block starting left of the view hid its text).
+
+*2026-11-16 · M22*
+
+**Why:** Lining an edge up by eye needs a line through the waveform. Green is the one hue no other editor mark uses (playhead red, trim yellow, markers pink, vamp cyan, cursor dashed white, selection blue); Panel's palette has no green, so a fixed colour with a halo reads over any tile colour.
+
+**Alternatives:** The focus colour (too close to the cyan waveform in Console); the playhead colour (confusable)
+
+### D-276: Icon buttons in the waveform editor: small glyphs drawn with egui shapes (src/app/icons.rs, no font symbols, no copied assets) for Add marker at cursor, Start here, End here, Trim to Selection, Vamp Selection, Play Selection/Stop, Clear Selection, Start at Playhead, Join Next, Reset Line, Split Again and the Start/Word/End grip toggle. Each keeps its old name for screen readers and tests, and its hover text. Text stays where an icon would be a guess: Reset Trim and Auto-Align. The header's Snap checkbox no longer wraps letter by letter at narrow widths.
+
+*2026-11-16 · M22*
+
+**Why:** The maintainer found the buttons wordy. Drawing in code matches the app's existing icons (pad_options) and the CraftApps' approach (SoundCraft's NOTICE: icons drawn in code), and keeps the reuse rule simple.
+
+**Alternatives:** Font symbols (glyph coverage varies; glyph_tests); copying icons from another app (licence)
+
+### D-277: Transcription engines: a connected QuipClipper server, an external whisper-cli (optional, found like ffmpeg, never bundled or required) and Apple's on-device speech on macOS/iPad. No Whisper compiled into the app, and the app downloads no model. Transcription runs only when asked, never on import.
+
+*2026-11-18*
+
+**Why:** The maintainer's choices on 2026-11-18. All three add essentially nothing to the download (to be measured), keep the app's 'online only when asked, downloads nothing' promise, and reuse what exists: QuipClipper already runs whisper.cpp on the home server, and ffmpeg set the pattern for an optional external tool.
+
+**Alternatives:** Whisper compiled in (about 2-3 MB per architecture plus an app-downloaded 31-466 MB model, hard on four release targets); automatic transcription on import (uploads every import, transcribes music and effects).
+
+### D-278: whisper-cli engine (src/transcribe/whisper_cli.rs): found like ffmpeg (LEADSTINGER_WHISPER, then whisper-cli or whisper-cpp on PATH, then the same extra dirs); the model from LEADSTINGER_WHISPER_MODEL or Settings ▸ Subtitles, checked for the ggml magic 'lmgg'. Runs whisper-cli -m <model> -f <wav> -l <lang> -t <half the cores, at most 4> -ojf -pp -of <stem> in a scratch folder; reads the full JSON's tokens (a token starting with a space starts a word; punctuation joins a word's text without moving its end; [_…] markers and [BLANK_AUDIO]/(music) segments dropped). Language: the setting, else en for a *.en model, else auto. No -dtw.
+
+*2026-11-18 · M22*
+
+**Why:** Matches the ffmpeg pattern the maintainer approved (D-068, D-277: optional, never bundled). whisper.cpp 1.9.5 (nixpkgs) disables -dtw whenever flash attention is on, which is its default, so -dtw did nothing on a real run; onset refinement does that job instead. Half the cores keeps playback smooth.
+
+**Alternatives:** -oj segments only (no word times); -ml 1 -sow one word per segment; -dtw with -nfa (slower, untested); finding models in usual folders (the plan said env or Settings only)
+
+### D-279: transcribe engine 'auto' order: Apple Speech (on-device, macOS/iPad), then whisper-cli, then a connected QuipClipper; the first that can run. The engine setting is auto or one engine by name (settings.transcribe); a named engine that can't run says why rather than falling back.
+
+*2026-11-18 · M22*
+
+**Why:** Apple's needs nothing installed and sends nothing anywhere; whisper-cli needs a program and model the user installed but stays local; QuipClipper sends the audio to a server, so it comes last and is never picked silently over a local engine.
+
+**Alternatives:** QuipClipper first (often the best model on a server); always ask
+
+### D-280: What transcribing a tile does: a tile with no subtitles, or only machine-made ones, takes the engine's lines through subtitles::merge (hand-aligned lines stay) with cues_source {kind: machine, engine, model, lang}, QuipClipper's shape; a tile with subtitles from elsewhere keeps its text and its lines without word timings get timings (align_text), the source gaining word_timing {engine, model}. A tile whose lines all have word timings is skipped ('nothing_to_do'). tile.alignWords {line} hears that line ±0.5 s and times its words again even if it has some (not a hand-placed line). Lines heard where a tile has no subtitle line are not added (yet).
+
+*2026-11-18 · M22*
+
+**Why:** The maintainer's ask is search for tiles with no subtitles and precise words; known text from a real subtitle file is better than what an engine hears, so it is never replaced (plan). Re-transcribing machine lines (a better model) should replace them.
+
+**Alternatives:** Always replace; add heard lines into the gaps between known lines (QuipClipper's gap mode) — a follow-up
+
+### D-281: Refine: each engine word start moves to the nearest sound onset (align::onsets_in) up to 0.15 s earlier or 0.05 s later, keeping order and MIN_WORD; a word ends where the next starts if it ran past; never marks a line aligned.
+
+*2026-11-18 · M22*
+
+**Why:** First tried 0.15 s both ways: on a real whisper-cli run (tiny.en, a spoken sentence) 'concert' (stop consonant) and 'enjoy' (run on from 'and') moved 0.14 s late onto a syllable inside the word, because the onset finder marks where a sound gets loud. Allowing only small later moves kept whisper's good times and still moved 10 of 14 words earlier onto the burst (mean 16 ms, max 55 ms). Nobody has judged it by ear.
+
+**Alternatives:** Symmetric reach; no refine; prefer strongest onset
+
+### D-282: align_text: known words and heard words are matched with a plain sequence alignment (folded with search::fold, letters and digits only): same word 0, nearly the same (1 edit in 4-6 letters, 2 in 7+) 1, another word in its place 3, a gap 2. Matched and substituted words take the heard word's time; the rest are spread by length between them; a line with no word heard as itself (exact or near) is left alone. Heard words inside other timed lines are ignored. One table for all lines up to 8M cells, else per line within ±1 s. The old timing goes into source_timing so Reset puts it back; lines are not marked aligned.
+
+*2026-11-18 · M22*
+
+**Why:** Simple, deterministic, handles extra, missing, misheard words and numbers spoken vs spelled (tests); the one-good-match rule stops a line being timed from unrelated words.
+
+**Alternatives:** Time-weighted alignment; phonetic matching; spelling numbers out
+
+### D-283: Transcription jobs: commands queue tiles as a job; one tile runs at a time on a 'transcribe' thread (decode if not loaded, prepare, engine, refine), progress and cancel through transcode::Progress. Each tile's result is applied when it finishes, against the tile as it is then, as its own undo step labelled 'Transcribe'; a tile removed or a set locked meanwhile fails that tile. Notices: one tile says what it did; a batch says 'Transcribed N tiles' or the first failure. transcribe.status polls the worker itself, so the offline CLI waits the same way (leadstinger-cli waits for tile.transcribe, set.transcribe and tile.alignWords). Quitting cancels and waits.
+
+*2026-11-18 · M22*
+
+**Why:** Matches the render jobs (D-077); one at a time keeps CPU for playback; per-tile undo because tiles land at different times and the user may edit in between.
+
+**Alternatives:** One undo step for a whole batch (applied at the end); parallel tiles
+
+### D-284: Transcription UI: a Transcribe button (drawn icon, src/app/icons.rs Glyph::Transcribe) beside SUBTITLES in the inspector's Sound tab (now shown for every tile with a sound) and in the editor's SUBTITLES row; Align Words (Glyph::AlignWords) for the selected line in the editor; the tile menu's Transcribe (the selection when the tile is in it); the set menu's 'Transcribe Tiles Without Subtitles…' behind a modal naming the engine and count; the pad's time label reads 'Transcribing 45%' / 'Queued'; the status bar shows 'Transcribing “X” 45% (+2)' with Cancel; Settings ▸ Subtitles: engine, language, whisper model (Choose…/Clear) and each engine's availability. Machine-made sources read 'Machine-made · whisper.cpp · tiny.en · en'.
+
+*2026-11-18 · M22*
+
+**Why:** Every action is a command (tile.transcribe, set.transcribe {ask}, tile.alignWords, transcribe.cancel, settings.transcribe); the confirmation names the engine as the plan asked; labels follow D-276's drawn-icon rule.
+
+**Alternatives:** A Transcribe menu in the menu bar; a progress ring on the pad
+
+### D-285: Audio for engines: mono (L+R)/2, resampled in the repo with a windowed-sinc (Blackman, 16 zero crossings, cutoff 95 % of the lower Nyquist, normalised by the kernel sum) to 16 kHz, written as 16-bit WAV (wav::mono_bytes); a range keeps its offset so engine times + offset are file seconds.
+
+*2026-11-18 · M22*
+
+**Why:** No resampling crate (brief); linear interpolation folds 8-22 kHz back into speech as noise. Tests: tones keep pitch within 0.2 %, level within 2 %, length exact; a 12 kHz tone is removed.
+
+**Alternatives:** Linear resampler; rubato crate
+
+### D-286: Apple Speech engine uses the Speech framework's SFSpeechRecognizer with SFSpeechURLRecognitionRequest on the prepared WAV, through the objc2-speech 0.3.2 crate (objc2 0.6 line, the one new dependency) plus block2 0.6 (already in the tree). Audio over 50 s is cut into pieces of at most 50 s at the quietest 0.1 s in the last 10 s of each, recognised one at a time; word times come from SFTranscriptionSegment timestamp/duration; lines are split at sentence ends (addsPunctuation, macOS 13+/iOS 16+), pauses of 0.7 s and more, and kept under about 7 s / 16 words (breaking after a comma or a short pause when they get long).
+
+*2026-11-18*
+
+**Why:** SpeechAnalyzer/SpeechTranscriber (macOS 26 / iOS 26) exist only in Speech's Swift interface, with no Objective-C headers, so Rust would need a Swift shim compiled into the build; SFSpeechRecognizer is Objective-C, works from macOS 10.15/iOS 13, and has requiresOnDeviceRecognition. Its headers still warn of a one-minute limit on recognition tasks, so pieces of 50 s keep every request inside it whatever the OS does; the framework gives one stream of word segments, so the engine makes the lines.
+
+**Alternatives:** SpeechAnalyzer via a Swift static library (newer, better long-form, but a Swift toolchain step in cargo and the iOS build, macOS 26+ only, SFSpeechRecognizer still needed as fallback); hand-written msg_send bindings (no new crate, more unsafe code to maintain); one request for the whole file (relies on undocumented long-audio behaviour)
+
+### D-287: Apple Speech is on-device only: every request sets requiresOnDeviceRecognition, and when the recogniser for the language has supportsOnDeviceRecognition false the engine refuses with a sentence saying there's no on-device model and LeadStinger never sends audio to Apple. It never falls back to Apple's servers.
+
+*2026-11-18*
+
+**Why:** The maintainer chose engines that keep the audio local unless he picks QuipClipper (his own server); a show's sound files can be private, and server recognition is also rate-limited and capped at a minute.
+
+**Alternatives:** Fall back to server recognition with a warning; a setting to allow it
+
+### D-288: Apple Speech never asks for permission by surprise. Only Settings ▸ Subtitles' 'Allow Speech Recognition…' button (command transcribe.allowSpeech) calls requestAuthorization, and only while the status is not determined. Until permission is granted, open() refuses with what to do (not determined: the Settings button; denied: System Settings ▸ Privacy & Security ▸ Speech Recognition; restricted: Screen Time or a profile), so auto skips Apple and moves on to whisper-cli and QuipClipper, and a transcription asked for during a show never puts a system dialog in front.
+
+*2026-11-18*
+
+**Why:** A permission dialog takes the screen; during a live show that is the worst moment. Asking once from Settings is the user's own act.
+
+**Alternatives:** Prompt on the first transcription (the usual iOS pattern); prompt at launch
+
+### D-289: Apple Speech runs only inside the app bundle (LeadStinger.app, the iPad app). A binary not started as its bundle's own executable (cargo run, the Nix build, leadstinger-cli --offline, even the copy of leadstinger-cli inside LeadStinger.app) reports it unavailable with the reason and never calls requestAuthorization; auto moves on to the next engine. leadstinger-cli without --offline hands commands to the running app, so tile.transcribe from the CLI still uses Apple Speech there.
+
+*2026-11-18*
+
+**Why:** requestAuthorization crashes a process whose main bundle has no NSSpeechRecognitionUsageDescription, and macOS keeps speech permission per app (TCC), which a bare binary doesn't have; a CLI started from a terminal would be judged as the terminal app.
+
+**Alternatives:** Embed an Info.plist into the binaries with -sectcreate (permission would still be the terminal's, and a prompt from a CLI is surprising); let the CLI try and fail at run time
+
+### D-290: QuipClipper transcription engine: the tile's prepared mono 16 kHz WAV is POSTed raw (audio/wav) to the connected server's /api/transcribe?lang=, the job followed with GET /api/jobs/{id} every 0.5 s (progress text 'a of b transcribed' as the tile's fraction) and cancelled with DELETE on a thread; the upload runs on its own thread so Cancel returns within a tick, and a job id that arrives after Cancel is deleted. No model parameter is sent (the server's default).
+
+*2026-11-18*
+
+**Why:** Follows quipclipper-main's final shapes (event 2026-11-19T02:30Z, their docs/API.md). Raw body: no multipart, no new dependency (ureq). Cancel must stop at once even mid-upload. A model setting would need the server's model list in Settings; the default (small.en on the home server) is what QuipClipper picks for its own work.
+
+**Alternatives:** multipart; polling faster; a per-server model choice in Settings
+
+### D-291: Whether a QuipClipper transcribes is asked (GET /api/config with its token: transcribe.upload is {max_bytes,max_seconds}) and cached per server, never per frame. Asked: in the background when the window first needs it (Settings, a Transcribe tooltip), again when Settings opens, when a server is connected or disconnected, after a failed call (413, 503, 401/403, lost connection, unexpected answer); a command that needs a server not yet asked asks synchronously (4 s connect, 6 s answer) and waits up to 8 s for a check under way.
+
+*2026-11-18*
+
+**Why:** Settings calls availability every frame; the first command (often from the CLI, with no window) must not fail just because nobody opened Settings. /api/config over /api/health: it needs the token, so an expired pairing shows before an upload, and it carries server_name.
+
+**Alternatives:** probe at launch; probe on every command; /api/health without credentials
+
+### D-292: With several connected QuipClippers that transcribe, the one chosen in Settings ▸ Subtitles (settings.transcribe quipServer) is used; else the first by server address (the servers file's sorted order). A chosen server that can't transcribe gives its own reason instead of passing to another; a chosen server no longer connected is ignored.
+
+*2026-11-18*
+
+**Why:** Deterministic and visible; silently sending audio to a different server than the one the user picked would surprise them.
+
+**Alternatives:** most recently connected; fastest to answer; ask each time
+
+### D-293: Before a QuipClipper run the UI names the server the audio goes to: the set's Transcribe Tiles Without Subtitles… confirmation (an extra line and the button's tooltip), the Transcribe button and tile-menu tooltip, Settings' readiness line (server, why it was chosen, why others can't), the start notice, and sendsTo in set.transcribe/tile.transcribe/transcribe.engines. Engine gets a default method destination() -> Option<String> for this.
+
+*2026-11-18*
+
+**Why:** The maintainer's privacy rule: audio leaving the computer must be said before it happens, by server name. A trait default keeps the seam unchanged for other engines.
+
+**Alternatives:** A separate confirmation for every QuipClipper run; only Settings
+
+### D-294: leadstinger-cli maps a --flag to the parameter name the command's summary uses (as typed, camel-case, or snake-case, in that order); a flag the summary doesn't name, or a {…}/[…] value that isn't valid JSON, is a usage error (exit 2). --params stays unchecked as the escape hatch.
+
+*2026-11-19*
+
+**Why:** --cues_source was camel-cased to cuesSource and silently dropped. The registry's param summaries are the only per-command list of names; matching any whole word in them is lenient enough that every doc example still parses (doc_examples_parse) while catching typos and wrong casing.
+
+**Alternatives:** Add a structured param list to every Spec (192 entries, large churn); only stop camel-casing underscores (still silent on typos); validate in the controller (every command handler)
+
+### D-295: Set windows: the controller keeps the main window's set (lent_from) while a set window has the board on loan; undo steps record it, and an undo/redo run inside the set window hands the restored set back to the main window while the set window keeps its own.
+
+*2026-11-19*
+
+**Why:** D-223 lends the board by making the window's set current, so steps recorded there remembered the window's set and undo moved the main window. Recording the main window's set keeps one shared history whose steps never move the main window to a set window's set.
+
+**Alternatives:** Per-window undo histories (bigger change, and menus act on the main window); not restoring the selection on undo at all (loses the main window's own set-switch restore)
+
+### D-296: Transcribe adds the lines an engine hears in the gaps of a tile's known subtitles: each heard line's words falling in one gap become a new line, marked per line (SubtitleLine.machine = {kind: machine, engine, model, lang}; QuipClipper's machine: true reads as {kind: machine}), refined onto onsets like other machine words, never aligned. A gap is >= 0.5 s between known lines (or before the first / after the last); words crossing a gap's edge are cut at it, and gap lines never overlap a known line or each other. The tile's cues_source stays the subtitles' own.
+
+*2026-11-19*
+
+**Why:** A per-line mark is the only way to tell an added line from the tile's own when its source is srt/embedded, and it carries the engine even for lines kept from an older run with another engine; it matches QuipClipper's cue shape (machine on the cue). QuipClipper uses 4 s because it re-transcribes those stretches on their own; LeadStinger already hears the whole short tile, so the minimum only filters slop and breaths (0.5 s).
+
+**Alternatives:** A machine_lines entry in the tile's cues_source plus machine: true per line (loses which engine made a kept older line; needs a source to exist); QuipClipper's 4 s minimum (would miss most of what a few-second tile leaves out); merging gap words into the neighbouring known line (changes known text).
+
+### D-297: Which known line a heard word belongs to (gap rules): its middle inside the line; or within 0.25 s outside it AND the word is that line's first (before) or last (after) word, heard early or late; or it is one of the heard words align_text gave a known word's time. Every other word is a gap word, cut at the gap's edge.
+
+*2026-11-19*
+
+**Why:** whisper's word times run up to ~0.2 s loose around a line, so a late 'there.' must not become a one-word line; but a flat 0.25 s pad dropped the real next word ('The interval…' right after '…enjoy the music.') in the real run. Matching only the edge word keeps the slop rule for the line's own word and lets a different word through. Excluding the words alignment used stops a known line with drifting SRT times from being heard again as a duplicate gap line.
+
+**Alternatives:** A flat 0.25 s pad around every known line (lost 'The' in the real run); matching the line's last two words ('the' of 'enjoy the music' then ate 'The interval'); overlap of the word's span instead of its middle (drops words that only touch an edge).
+
+### D-298: Gap lines are on by default for tile.transcribe (gaps: false only times known words, and is then what skips a fully timed tile), opt-in for set.transcribe (gaps: true adds the set's tiles whose subtitles aren't machine-made) and an unticked box in the set confirmation ('Also listen to the N tiles that have subtitles, for lines they leave out'); tile.alignWords never adds them.
+
+*2026-11-19*
+
+**Why:** Asking to transcribe one tile that has subtitles is asking what's said in it; QuipClipper's gaps mode is its default too. The set command is named and menu-labelled 'Tiles Without Subtitles', so silently sending every subtitled tile's audio (possibly to a QuipClipper server) would surprise; the box makes it a visible choice. alignWords hears one line plus 0.5 s either side: anything else there is not a gap of the tile.
+
+**Alternatives:** Off by default everywhere (the feature would be hidden behind a flag); on for set.transcribe too (changes what an existing menu item does and sends more audio); a separate tile.fillGaps command (a second way to do one thing).
+
+### D-299: A re-run replaces the gap lines it added before that nobody has touched (touched = aligned, or source_timing kept by an editor change), so nothing is doubled; touched gap lines stay exactly as they are and count as known lines (heard words over them are theirs). A new copy of the subtitles from the source (subtitles::merge) keeps gap lines no incoming line overlaps. Results are compared with a 1 µs tolerance (transcribe::same_lines) so a run hearing the same thing makes no undo step.
+
+*2026-11-19*
+
+**Why:** The engine's output is the authority for untouched machine lines (a new model may hear better), a person's edit is the authority for touched ones; the editor already records every first change in source_timing, so no new field is needed to know. The library file stores times slightly shorter than worked out (e.g. 3.6866213151927436 → 3.686621315192744), which made identical re-runs look changed and add an empty undo step in the real run.
+
+**Alternatives:** Never replace old gap lines, only add where nothing is (stale misheard lines would stick forever); a separate 'edited' flag on lines (duplicates source_timing/aligned); dropping gap lines on a source re-copy (loses them whenever QuipClipper's subtitles are refreshed).
+
+### D-300: Lines added in the editor carry a new field, added: true (SubtitleLine.added, stored only when true). subtitles::merge keeps every added line through a new copy from the source and through transcription; an added line stands in for an incoming line only when the text matches and the times overlap, never by its source_timing.
+
+*2026-11-19*
+
+**Why:** After any edit an added line looks like an edited source line (begin() gives it a source_timing, finish() marks it aligned), so without its own mark the re-import couldn't tell it apart and would drop it. A field is explicit, round-trips through the library and set files, and QuipClipper never writes it. It costs one ', added: false' on the struct literals in the transcribe engines and tests (no logic there).
+
+**Alternatives:** Infer it from aligned && source_timing == None (lost on the first edit); a sentinel source_timing (unreadable JSON, broken by parse checks); a per-tile list of added lines (fragile across renumbering)
+
+### D-301: tile.subtitleAdd places a line from start to end, or from at for about 0.3 s a word (0.8 to 6 s), stopping before the next line that leaves its words room, inside the audio. Its words start on the sounds that rise inside the stretch (Auto-Align's rule, only onsets at or after its start so it stays where it was put) or are spread evenly (words: even, then provisional). Either way it is a suggestion, not aligned, with no source_timing. In the open editor the new line becomes the selection. The editor's Add Line uses the waveform selection, else the playhead, else the cursor.
+
+*2026-11-19*
+
+**Why:** The task asked for the playhead or the selection; a default length keeps a click-to-add usable, and stopping before the next line avoids overlapping a line someone already timed. Onsets before the start were allowed by Auto-Align and pulled a line put over a selection out of it in testing.
+
+**Alternatives:** Require start and end always (no quick add at the playhead); mark added lines aligned (would disable Align Words and Reset on them)
+
+### D-302: A line's bar in the subtitle lane is now a Tab stop: a click gives the line the keyboard (it used to hand it to the first word). Left/Right move the whole line 10 ms (Shift 100 ms), Delete or Backspace delete it, and a focus ring shows on the bar. The tools row has a Delete Line icon button and a New line field with an Add Line icon button (a line bar over two words, with a plus or a minus). tile.subtitleDelete removes one line; a new copy from the source brings a line it still has back (no tombstones).
+
+*2026-11-19*
+
+**Why:** The task asked for Delete/Backspace when a line, not a word, has focus, which needs the bar to take focus; arrows moving the line keep a click on the bar as useful as before. Tombstones for deleted source lines would need another stored list and a way to undo them; deleting a source line is rare and a re-import is a deliberate act.
+
+**Alternatives:** Keep focus on the first word and add a modifier key for line delete; remember deleted source lines so a re-import skips them (left as a possible follow-up)
+
+### D-303: A heard (machine-marked) subtitle line whose text a person retypes in the editor loses its machine mark and counts as an added line
+
+*2026-11-19*
+
+**Why:** Gap mode (D-299) replaces its own earlier lines on a re-run unless changed by hand, but it only saw timing edits as a change; the new text edits (D-300..D-302) changed text without that. A person who corrects what the engine misheard must not lose the correction to the next transcription or re-import, and an added line is already kept by both.
+
+**Alternatives:** A separate 'edited' flag on the line; treating any text difference from what the engine hears as hand work (needs the old hearing kept)
+
+### D-304: The coordinator hands over to a fresh session before its context has to be compacted, never after: it watches get_usage, starts nothing new past half of the way to auto-compact, hands over at once past three quarters, starts its successor itself and then closes itself. Rules page 'Sessions' rewritten; the rule for every project is in ~/nix/.claude/AGENTS.md (nix 0e126fe2).
+
+*2026-11-19*
+
+**Why:** (left out of the public snapshot)
+
+**Alternatives:** Hand over after the first compaction (the rule until now); keep the successor as a card the maintainer starts
+
+### D-306: A script (run, batch.run) is atomic by default: a failing step puts the sets and tiles back and records nothing; --keep-going (atomic: false) keeps the steps that worked. Its undo step is always labelled Script.
+
+*2026-11-19*
+
+**Why:** A half-done agent script is the worst outcome to clean up; undo snapshots already cover sets and tiles, so rolling back is cheap and matches what undo can take back. Settings, view and playback stay, as with undo.
+
+**Alternatives:** Keep run's old behaviour (steps before a failure kept) and make atomic opt-in; a caller-supplied undo label (needs non-static labels in History).
+
+### D-307: leadstinger-cli mcp implements MCP by hand (src/mcp.rs: initialize, ping, tools/list, tools/call, notifications over newline-delimited JSON-RPC), with four tools in front of the registry, not rmcp behind a cargo feature; each call opens the app or the library afresh.
+
+*2026-11-21*
+
+**Why:** A tools-only stdio server needs a handful of methods; rmcp would bring tokio and an async runtime into a CLI that has none (AGENTS: few, well-known dependencies), and cadcraft's server shows the hand-written form works. Per-call targets keep a connected client from holding the library lock.
+
+**Alternatives:** (left out of the public snapshot)
+
+19 decisions about private infrastructure and the gift edition are left out of the public snapshot: D-013, D-015, D-023, D-030, D-031, D-033, D-036, D-037, D-038, D-130, D-137, D-138, D-139, D-162, D-174, D-186, D-242, D-244, D-305.
 
 ## Tests
 
@@ -1988,7 +2364,7 @@ Each decision with its reasoning and the alternatives that were turned down.
 | cli (tests/cli.rs) | 5 | The real binary: offline library commands, exit codes 2-5, --safe, ambiguity; online trigger/status/watch/run against an in-process socket; set files between two libraries |
 | commands | 5 | unique ids, unique shortcuts, menu args, docs/CLI.md is up to date, undoable commands are library commands |
 | control | 4 | short socket paths, socket round-trip + events + waiting while the window holds the Controller, exclusive library lock |
-| controller | 74 | every command implemented; tile refs and ambiguity; play/stop/cue; tile.set validation and hotkeys; sets and view; pickers as effects; gain and normalise; ducking; undo/redo with coalescing and held media; MIDI bindings, learn, faders, auto-map; system-wide key bindings |
+| controller | 89 | every command implemented; tile refs and ambiguity; play/stop/cue; tile.set validation and hotkeys; sets and view; pickers as effects; gain and normalise; ducking; undo/redo with coalescing and held media; MIDI bindings, learn, faders, auto-map; system-wide key bindings |
 | controller (OSC level feedback) | 1 | controller::osc_feedback_sends_tile_levels_ten_times_a_second: against a local UDP socket, a stopped tile sends level 0; a 0.4 tone reads 0.65-0.8; while the level falls (master 0.1) 0.6 s of 50 fps ticks sends 5-7 strictly falling /ls/tile/1/level values; a 0 for /ls/tile/1/level and /ls/now/level on the tick the tile stops; osc.enable --levels false sends 0 once then no /level addresses, and osc.status reports it. On a64ef4f: lib total 271 on macOS (both brands), 277 listed with the CLI tests; 273 lib on the home server. |
 | decode | 12 | mono WAV to stereo, non-audio rejected, FLAC front cover; BS.775 downmix gains (mono, stereo, 5.1 rear/side, 7.1, empty layout, other positions) and a decoded 6-channel extensible WAV |
 | The reference app | 7 |  |
@@ -2009,7 +2385,7 @@ Each decision with its reasoning and the alternatives that were turned down.
 | paste | 3 | uri-list and gnome-copied-files parsing, percent-decoding, plain-text paths |
 | picture | 3 | decode, downscale keeping aspect, reject non-images |
 | pitch | 2 | An octave up doubles the frequency and keeps the length |
-| quip | 33 | link parsing (good, round trip, clip URLs) and 25 bad links; token file 0600, re-tightened, never in Debug; base64; launcher entry for links; unconnected server refused with nothing fetched; local HTTP server: connect checks the token, same-server redirect, download to a decoded tile with the link's title/trim in a created set, undo, 404 fails the tile; cross-host redirect, HTML answer, size cap and cancel refused. Lib total 188 on macOS (both brands), 189 on the home server. |
+| quip | 49 | link parsing (good, round trip, clip URLs) and 25 bad links; token file 0600, re-tightened, never in Debug; base64; launcher entry for links; unconnected server refused with nothing fetched; local HTTP server: connect checks the token, same-server redirect, download to a decoded tile with the link's title/trim in a created set, undo, 404 fails the tile; cross-host redirect, HTML answer, size cap and cancel refused. Lib total 188 on macOS (both brands), 189 on the home server. |
 | quip::clips (+ a11y_tests on that branch) | 9 | Against a local mock QuipClipper: entries read leniently (line, Show S01E04 · episode, movie (year), 5.1, half a trim is no trim, notes); listing URLs; browse with ETag/304 reuse, 403 detail, missing contract, bad folder/kind/query, wrong token never echoed; quip.new baseline beside the token (never in the library), mark, refused cursor re-baselines; quip.add as FLAC with title/trim/notes and never the listing's own URLs, a set file downloaded on a thread then imported as a set; as=flac on URLs and links; previews from memory on the preview voice, 404 reported. a11y: the_quip_browser_works_from_the_keyboard (ListBox 'Clips', Up/Down, Space previews, Enter adds trimmed, tile keys blocked) and the gaps() walk opens the window in both themes. Lib total 224 on macOS (both brands), 229 listed with the CLI tests. |
 | render (+ controller::export on that branch) | 8 | render: render == live mixer output (two rates), trim and fades on the right samples, loops/vamps one pass, channel mix, cancel, WAV and FLAC decode back to the same 24-bit samples (incl. A one-frame FLAC), jobs leave no .part, safe unique folder names (8). controller::export: tile.render matches the app's pitched copy and leaves the library untouched, set.render names and never overwrites, window effect and parameter checks, renders from the file when nothing is decoded (offline CLI) (4). Lib total 192 on macOS (both brands), 193 on the home server. |
 | rows + app::grid (+ app, controller, store, setfile, a11y_tests) | 11 | M22 slot grid (D-140..D-143). rows: fill rule, blanks placed and kept, inserts into gaps/blanks/new rows, removal drops pad-less rows with their blanks, moves (into and past blanks, flat to), evening out clears blanks (7). app::grid: old columns, narrowing, rows sharing the board's height down to the minimum, even wrapping and empty preview rows, auto columns, drop targets (gaps, blanks, phantom rows incl. past a row's edge), no-op moves, the preview grid with ghosts (8). app: move keys swap with blanks. controller: rows_commands, blank_slots_from_the_cli; store: version_2 and version_3 migrations keep a copy; setfile round trip keeps rows and blanks; a11y: rows_work_from_the_keyboard, tiles_drag_into_rows_and_between_them, pads_drag_into_gaps_blanks_and_phantom_rows (real pointer drags), a_finder_drop_lands_on_the_tile_under_it (gaps, two ghosts, no replace), settings_choose_the_grid_layout. On 5d6f619: lib 316 on macOS (both brands), 325 listed; b16e7a4: 314 lib on the home server. |
@@ -2021,7 +2397,7 @@ Each decision with its reasoning and the alternatives that were turned down.
 | theme + controller + model + a11y_tests | 3 | D-152/D-158..D-160. theme::pad_faces_by_mode (both faces' fills for all 16 colours, normal and HC; titles reach 4.5 / 7:1 and are lightened no further than needed); controller::coloured_pads_setting_round_trips (toggle, set, saved and reopened); a11y::the_editor_of_a_locked_tile_is_read_only (Console and Panel: banner, handles disabled sliders named read-only, 15 controls disabled with the lock reason, Preview/selection/Jump live, tile unchanged, Unlock restores); model: older libraries read Coloured pads off; contrast check covers both pad faces. On 2dc5e49: lib 330 on macOS (both brands), 339 listed; 332 lib on the home server. |
 | transcode (+ store, setfile, demo on that branch) | 5 | when to convert, extensions, install hint, finding ffmpeg (setting/PATH/usual folders), ffmpeg clocks and errors (5). On the branch also: store +2 (5.1 AC-3 and MKV through ffmpeg keep 6 channels/only audio; cancel and a bad file), setfile +1 (AC-3 in a zipped set file), demo +1 (every demo tile decodes). Lib total 171 on macOS, 172 on the home server. |
 | waveform | 6 | pyramid range vs brute force on random audio, level counts, columns zoom/clamp/overflow/degenerate, zero crossings |
-| **total** | **486** | |
+| **total** | **517** | |
 
 ## Platforms
 

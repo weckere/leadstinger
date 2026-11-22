@@ -49,6 +49,11 @@ touch-sized controls, the on-screen keyboard, background-audio checks.
 - global hotkeys, the macOS menu bar, drag-out to Finder, the Check-for-Updates flow, QuipClipper discovery by mDNS until local-network permission is handled, ffmpeg-based decoding of AC-3/video audio (no ffmpeg on iOS; symphonia only).
 - microphone recording: possible (cpal input plus `NSMicrophoneUsageDescription`), but not needed for a first build.
 
+**Since added:** transcription with Apple Speech (on-device only, D-286 to D-289), the
+same engine as on macOS, with `NSSpeechRecognitionUsageDescription` in `ios/Info.plist`
+and the permission asked only from Settings ▸ Subtitles. whisper-cli can't run on iPadOS
+(no separate programs), so Apple Speech is the iPad's local engine.
+
 ## Phases
 
 1. **Builds and shows** (the stage-2 target). Per-target Cargo features, `cfg` gates for the 12 errors, `src/ios/` with the wgpu limit fix, safe-area insets, Documents-folder data dir, `AVAudioSession`. `scripts/ios-build.sh`. The board renders in the iPad simulator in both themes; tap plays a pad.

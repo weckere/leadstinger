@@ -416,6 +416,8 @@ pub fn export(store: &mut Store, set_idxs: &[usize], path: &Path) -> Result<Expo
                 pre_wait: t.pre_wait,
                 link: (t.link != CueLink::None).then(|| enum_name(t.link)).flatten(),
                 post_wait: t.post_wait,
+                cues: (!t.subtitles.is_empty()).then(|| crate::subtitles::to_value(&t.subtitles)),
+                cues_source: t.subtitles_source.as_ref().filter(|_| !t.subtitles.is_empty()).and_then(|s| serde_json::to_value(s).ok()),
                 action: t.action.as_ref().map(|a| PackAction {
                     kind: enum_name(a.kind).unwrap_or_default(),
                     fade: a.fade,
@@ -662,6 +664,64 @@ mod tests {
         let got: Vec<_> = set.tiles.iter().map(|t| (t.hotkey.map(PadKey::name).unwrap_or_default(), t.hotkey_manual)).collect();
         let want = [("1", false), ("2", false), ("r", true), ("w", false)];
         assert_eq!(got, want.map(|(k, m)| (k.to_owned(), m)), "row 2's second pad takes W");
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    /// Subtitles travel under QuipClipper's names (D-260): a LeadStinger set file and one
+    /// QuipClipper wrote are read the same way, bad lines skipped, the tile kept.
+    #[test]
+    fn subtitles_travel_in_set_files_both_ways() {
+        let root = temp_dir("subtitles");
+        let mut store = library(&root);
+        let si = store.library.sets.len() - 1;
+        let cues = serde_json::json!([
+            {"start": 0.0, "end": 0.2, "text": "Hello there", "aligned": true, "words": [{"start": 0.0, "end": 0.1, "text": "Hello"}, {"start": 0.1, "end": 0.2, "text": "there"}]},
+            {"start": 0.15, "end": 0.3, "text": "Line two"}
+        ]);
+        {
+            let t = &mut store.library.sets[si].tiles[0];
+            t.subtitles = crate::subtitles::parse_lines(&cues).lines;
+            t.subtitles_source = crate::subtitles::parse_source(&serde_json::json!({"kind": "whisper", "lang": "en", "model": "small"}));
+        }
+        let out = export(&mut store, &[si], &root.join("subs")).unwrap();
+        let unpacked = Unpacked::new(&out.path).unwrap();
+        let manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(unpacked.root().join("manifest.json")).unwrap()).unwrap();
+        let tiles = &manifest["sets"][0]["tiles"];
+        assert_eq!(tiles[0]["cues"], cues, "as QuipClipper writes them, plus aligned");
+        assert_eq!(tiles[0]["cues_source"], serde_json::json!({"kind": "whisper", "lang": "en", "model": "small"}));
+        assert!(tiles[1].get("cues").is_none() && tiles[1].get("cues_source").is_none(), "a tile without subtitles writes neither");
+        let mut other = Store::open_with(root.join("other"), false).unwrap();
+        import(&mut other, &out.path).unwrap();
+        let (a, b) = (&store.library.sets[si].tiles[0], &other.library.sets.last().unwrap().tiles[0]);
+        assert_eq!((&a.subtitles, &a.subtitles_source), (&b.subtitles, &b.subtitles_source));
+        assert!(b.subtitles[0].aligned, "hand alignment survives the trip");
+
+        // A QuipClipper-style manifest: cues out of order and some broken, words on one.
+        let pack = root.join("quip");
+        tone(&pack.join("Heat/line.wav"), 440.0);
+        tone(&pack.join("Heat/plain.wav"), 440.0);
+        let quip = serde_json::json!({"format": FORMAT, "version": 3, "app": "QuipClipper", "sets": [{"name": "Heat", "tiles": [
+            {"file": "Heat/line.wav", "title": "Don't let yourself get attached", "trim_start": 0.5, "trim_end": 1.5,
+             "cues": [
+                {"start": 1.2, "end": 1.6, "text": "get attached", "words": [{"start": 1.2, "end": 1.3, "text": "get"}, {"start": 1.3, "end": "x", "text": "attached"}]},
+                {"start": 0.4, "end": 1.2, "text": "Don't let yourself"},
+                {"start": 0.4, "end": 1.2, "text": "Don't let yourself"},
+                {"start": 2.0, "end": 1.0, "text": "backwards"},
+                {"text": "no times"},
+                42
+             ],
+             "cues_source": {"kind": "srt", "lang": "en"}},
+            {"file": "Heat/plain.wav", "title": "Bad cues", "cues": "not a list", "cues_source": {"kind": "srt"}}
+        ]}]});
+        std::fs::write(pack.join("manifest.json"), quip.to_string()).unwrap();
+        let got = import(&mut other, &pack).unwrap();
+        assert_eq!(got.sets[0].tiles, 2, "broken subtitles never cost a tile");
+        let set = other.library.sets.last().unwrap();
+        let texts: Vec<_> = set.tiles[0].subtitles.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, ["Don't let yourself", "get attached"]);
+        assert_eq!(set.tiles[0].subtitles[1].words.len(), 1, "the bad word skipped");
+        assert_eq!(set.tiles[0].subtitles_source.as_ref().map(|s| s.kind.as_str()), Some("srt"));
+        assert!(set.tiles[1].subtitles.is_empty() && set.tiles[1].subtitles_source.is_none(), "no lines, no source");
         std::fs::remove_dir_all(root).ok();
     }
 

@@ -687,6 +687,10 @@ pub struct Tile {
     pub emoji: String,
     /// File name inside the library's `Media/` folder.
     pub file: Option<String>,
+    /// The name of the file its audio was made from ("Big Applause.wav"), kept so a
+    /// search finds it by file name (the copy in `Media/` has a made-up name).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     pub color: TileColor,
     /// Its key: the slot's automatic one (`logic::rekey`), or one set by hand.
     #[serde(deserialize_with = "crate::logic::lenient_key")]
@@ -777,6 +781,13 @@ pub struct Tile {
     /// starts.
     #[serde(skip_serializing_if = "is_zero")]
     pub post_wait: f64,
+    /// Its subtitles, the timed lines spoken in the audio (src/subtitles.rs, D-260), in
+    /// seconds into the file. Stored as QuipClipper names them, `cues`.
+    #[serde(rename = "cues", skip_serializing_if = "Vec::is_empty", deserialize_with = "crate::subtitles::lenient_lines")]
+    pub subtitles: Vec<crate::subtitles::SubtitleLine>,
+    /// Where the subtitles came from (`cues_source`: kind, lang, ...).
+    #[serde(rename = "cues_source", skip_serializing_if = "Option::is_none", deserialize_with = "crate::subtitles::lenient_source")]
+    pub subtitles_source: Option<crate::subtitles::SubtitleSource>,
 }
 
 fn is_default<T: Default + PartialEq>(v: &T) -> bool {
@@ -790,6 +801,7 @@ impl Default for Tile {
             title: "Untitled".into(),
             emoji: String::new(),
             file: None,
+            source: None,
             color: TileColor::default(),
             hotkey: None,
             hotkey_manual: false,
@@ -828,6 +840,8 @@ impl Default for Tile {
             pre_wait: 0.0,
             link: CueLink::None,
             post_wait: 0.0,
+            subtitles: Vec::new(),
+            subtitles_source: None,
         }
     }
 }
@@ -851,6 +865,12 @@ impl Tile {
     /// set).
     pub fn duplicate(&self) -> Tile {
         Tile { id: Uuid::new_v4(), hotkey: None, hotkey_manual: false, ..self.clone() }
+    }
+
+    /// Forget its subtitles: they describe audio it no longer has (D-262).
+    pub fn clear_subtitles(&mut self) {
+        self.subtitles.clear();
+        self.subtitles_source = None;
     }
 
     /// The linear gain the mixer applies: volume times the dB gain, or 0 while muted.
@@ -1029,6 +1049,29 @@ pub struct Library {
     /// with where each was last: reopened at launch (D-225).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub set_windows: Vec<SetWindow>,
+    /// Settings ▸ Subtitles: how tiles are transcribed (`settings.transcribe`, D-277).
+    pub transcribe: TranscribeSettings,
+}
+
+/// How tiles are transcribed (src/transcribe.rs): the engine (`auto` or one by name),
+/// the language (`None`: the engine's default or its guess) and whisper-cli's model.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TranscribeSettings {
+    pub engine: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lang: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub whisper_model: Option<std::path::PathBuf>,
+    /// The connected QuipClipper server to transcribe on (`None`: the first that can).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quip_server: Option<String>,
+}
+
+impl Default for TranscribeSettings {
+    fn default() -> Self {
+        TranscribeSettings { engine: "auto".to_owned(), lang: None, whisper_model: None, quip_server: None }
+    }
 }
 
 /// A set open in a window of its own, and where that window was (`window.open`). The
@@ -1107,6 +1150,7 @@ impl Default for Library {
             quip_badge: true,
             quip_ask_each: false,
             set_windows: Vec::new(),
+            transcribe: TranscribeSettings::default(),
         }
     }
 }
@@ -1575,6 +1619,34 @@ mod tests {
         assert_eq!(Tile { muted: false, ..quiet.clone() }.gain(), 0.5);
         let old: Tile = serde_json::from_str(r#"{"title":"Old"}"#).unwrap();
         assert!(!old.muted);
+    }
+
+    /// Subtitles (D-260) round-trip under QuipClipper's names; a tile without them writes
+    /// neither field, an old tile reads with none, and a bad line never stops a library
+    /// loading.
+    #[test]
+    fn subtitles_round_trip_and_old_tiles_have_none() {
+        let mut lib = Library::starter();
+        let cues = serde_json::json!([
+            {"start": 0.5, "end": 1.0, "text": "Hi", "words": [{"start": 0.5, "end": 1.0, "text": "Hi"}], "aligned": true},
+            {"start": 1.0, "end": 2.0, "text": "Plain"}
+        ]);
+        let subtitles = crate::subtitles::parse_lines(&cues).lines;
+        let source = crate::subtitles::parse_source(&serde_json::json!({"kind": "srt", "lang": "en"}));
+        lib.sets[0].tiles.push(Tile { title: "Line".into(), subtitles: subtitles.clone(), subtitles_source: source.clone(), ..Default::default() });
+        lib.sets[0].tiles.push(Tile { title: "Bare".into(), ..Default::default() });
+        let json = serde_json::to_value(&lib).unwrap();
+        let tiles = json["sets"][0]["tiles"].as_array().unwrap();
+        assert_eq!((&tiles[0]["cues"], &tiles[0]["cues_source"]), (&cues, &serde_json::json!({"kind": "srt", "lang": "en"})));
+        assert!(tiles[1].get("cues").is_none() && tiles[1].get("cues_source").is_none(), "a tile without them writes nothing");
+        let back: Library = serde_json::from_value(json).unwrap();
+        assert_eq!(lib, back);
+        let old: Tile = serde_json::from_str(r#"{"title":"Old"}"#).unwrap();
+        assert!(old.subtitles.is_empty() && old.subtitles_source.is_none());
+        let bad: Tile = serde_json::from_str(r#"{"title":"Bad","cues":[{"start":"x"},{"start":1,"end":2,"text":"ok"}],"cues_source":"srt"}"#).unwrap();
+        assert_eq!((bad.subtitles.len(), bad.subtitles_source.is_none()), (1, true));
+        let copy = lib.sets[0].tiles[0].duplicate();
+        assert_eq!((&copy.subtitles, &copy.subtitles_source), (&subtitles, &source), "a copy plays the same file (D-262)");
     }
 
     /// A bed's own duck level (D-245) is kept; older tiles, and beds left at the default,

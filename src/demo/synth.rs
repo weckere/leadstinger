@@ -379,6 +379,12 @@ const VOWELS: [[f64; 3]; 6] = [
 /// Speech-like babble: `shape` gives syllables per word ("2 1 3"), with `|` between
 /// phrases. `f0` is the voice's pitch; `lively` how much it moves.
 fn speech(m: &mut Mix, at: f64, shape: &str, f0: f64, lively: f64, g: f64, rng: &mut Rng) -> f64 {
+    speech_words(m, at, shape, f0, lively, g, rng).0
+}
+
+/// [`speech`], also giving the time each word starts (its first consonant), for tests
+/// that need to know where the words are.
+fn speech_words(m: &mut Mix, at: f64, shape: &str, f0: f64, lively: f64, g: f64, rng: &mut Rng) -> (f64, Vec<f64>) {
     // Plan the syllables: (start, length, loudness, pitch, vowel, consonant kind).
     struct Syl {
         at: f64,
@@ -389,6 +395,7 @@ fn speech(m: &mut Mix, at: f64, shape: &str, f0: f64, lively: f64, g: f64, rng: 
         onset: u8,
     }
     let mut syls = Vec::new();
+    let mut word_starts = Vec::new();
     let mut t = at;
     let phrases: Vec<&str> = shape.split('|').collect();
     for (pi, phrase) in phrases.iter().enumerate() {
@@ -398,6 +405,7 @@ fn speech(m: &mut Mix, at: f64, shape: &str, f0: f64, lively: f64, g: f64, rng: 
         let last_phrase = pi + 1 == phrases.len();
         for (wi, &count) in words.iter().enumerate() {
             let stress = rng.next() as usize % count.max(1);
+            word_starts.push(t);
             for s in 0..count {
                 let pos = k as f64 / n_syl as f64;
                 // Pitch falls over a phrase; the last one may rise (a question, an exclamation).
@@ -467,7 +475,17 @@ fn speech(m: &mut Mix, at: f64, shape: &str, f0: f64, lively: f64, g: f64, rng: 
         let hiss = noise_hp.run(r.bi(), 3500.0);
         (voiced * ve * 1.6 + hiss * ce) * g
     });
-    end
+    (end, word_starts)
+}
+
+/// Speech-like babble as [`render`] makes it for [`Kind::Speech`], `seconds` long at
+/// [`RATE`], with the time each word starts: the onset finder's test material.
+#[cfg(test)]
+pub fn speech_with_words(shape: &str, f0: f64, lively: f64, seconds: f64, seed: u64) -> (Vec<f32>, Vec<f64>) {
+    let mut m = Mix::new(seconds);
+    let mut rng = Rng::new(seed);
+    let (_, starts) = speech_words(&mut m, 0.08, shape, f0, lively, 1.0, &mut rng);
+    (m.finish(0.82), starts)
 }
 
 // --- noise textures ---

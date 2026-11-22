@@ -83,13 +83,9 @@ pub(super) const RENAME_FIELD: &str = "The set's new name: Enter keeps it, Esc c
 
 impl StingerApp {
     /// A tile's hover card: its title, how it plays, its key and length, where it plays,
-    /// its notes, what starts the next cue, and what a click does. `set` names the set it
-    /// lives in, for search hits.
-    pub(super) fn tile_tip(&self, tile: &Tile, set: Option<&str>) -> String {
+    /// its notes, what starts the next cue, and what a click does.
+    pub(super) fn tile_tip(&self, tile: &Tile) -> String {
         let mut lines = vec![if tile.title.trim().is_empty() { "Untitled tile".to_owned() } else { tile.title.clone() }];
-        if let Some(set) = set {
-            lines.push(format!("In “{set}”"));
-        }
         let mut how = Vec::new();
         match &tile.action {
             Some(a) => how.push(a.kind.label().to_owned()),
@@ -200,9 +196,9 @@ pub(super) fn set_label(name: &str, index: usize, sets: usize, tiles: usize, pla
 impl StingerApp {
     /// A tile or cue row, for a screen reader, live: "Air Horn, tile 5, key 5, hold,
     /// playing, 1.2 seconds left". A cue row starts with its number and adds whether it
-    /// has played (its armed mark), its notes and link; a search hit names its set; a grid tile in Rows mode its `row`
+    /// has played (its armed mark), its notes and link; a grid tile in Rows mode its `row`
     /// ("tile 5, row 2"; the number stays the one pads, OSC and the cue list use).
-    pub(super) fn tile_label(&self, tile: &Tile, index: usize, set: Option<&str>, cue: Option<bool>, row: Option<usize>) -> String {
+    pub(super) fn tile_label(&self, tile: &Tile, index: usize, cue: Option<bool>, row: Option<usize>) -> String {
         let title = if tile.title.trim().is_empty() { "Untitled" } else { tile.title.as_str() };
         let mut parts = vec![match cue {
             Some(_) => format!("Cue {}, {title}", index + 1),
@@ -210,9 +206,6 @@ impl StingerApp {
         }];
         if let Some(row) = row {
             parts.push(format!("row {}", row + 1));
-        }
-        if let Some(set) = set {
-            parts.push(format!("in {set}"));
         }
         if let Some(k) = tile.hotkey {
             parts.push(format!("key {}", k.spoken()));

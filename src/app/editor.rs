@@ -13,6 +13,8 @@ use crate::decode::DecodedAudio;
 use crate::logic::{format_samples, format_timecode, parse_timecode, vamp_range};
 use crate::controller::EditorZoom;
 use crate::waveform::{nearest_zero_crossing, PeakPyramid};
+use super::icons::{self, Glyph};
+use super::subtitle_lane::{LaneState, LANE_H};
 
 pub const OPEN_TIP: &str =
     "Open this tile in the full-window waveform editor: zoom in to trim, vamp and place markers to the sample (⌘/Ctrl+Shift+E)";
@@ -120,12 +122,14 @@ pub struct EditorView {
     width: f32,
     /// A drag on the waveform: where it started, in seconds, while it selects.
     selecting: Option<f64>,
+    /// The subtitle lane across the top of the waveform.
+    pub lane: LaneState,
 }
 
 impl EditorView {
     fn new(tile: Uuid, audio: Arc<DecodedAudio>) -> Self {
         let pyramid = PeakPyramid::new(&audio.data);
-        EditorView { tile, audio, pyramid, view: None, snap: true, cursor: None, width: 1.0, selecting: None }
+        EditorView { tile, audio, pyramid, view: None, snap: true, cursor: None, width: 1.0, selecting: None, lane: LaneState::default() }
     }
 
     /// Zoom in `doublings` times around the middle (a script step, for screenshots).
@@ -212,7 +216,11 @@ impl StingerApp {
             if theme::hint(zout, "Zoom out (or ⌘/Ctrl+scroll, pinch, or − with the waveform focused)").clicked() {
                 actions.push(inv!("view.editorZoom", {"by": 1.0 / ZOOM_STEP}).into());
             }
-            let snap = ui.add_enabled_ui(!locked, |ui| theme::checkbox(ui, &mut ev.snap, "Snap")).inner;
+            // Added straight to the row (no child scope) with its text unwrapped, so a
+            // narrow row moves it to the next line instead of wrapping "Snap" letter by
+            // letter.
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+            let snap = ui.add_enabled(!locked, egui::Checkbox::new(&mut ev.snap, RichText::new("Snap").text_style(egui::TextStyle::Button)));
             theme::hint_or(snap, "Handles and markers land on the nearest zero crossing, so cuts don't click (Alt with the arrow keys moves one sample, unsnapped)", tips::LOCKED_WHY);
         };
         ui.horizontal(|ui| {
@@ -245,9 +253,13 @@ impl StingerApp {
         let frames = audio.frames();
         let dur = audio.duration().max(1e-6);
 
-        // The waveform: as tall as the space leaves after the fields below.
-        let height = (ui.available_height() - 250.0).max(140.0);
+        // The waveform: as tall as the space leaves after the fields below, and the
+        // subtitle lane across its top, under the ruler, when the tile has subtitles (D-275).
+        let subs = !t.subtitles.is_empty();
+        let lane_h = if subs { LANE_H } else { 0.0 };
+        let height = (ui.available_height() - 250.0).max(140.0 + lane_h);
         let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::click_and_drag());
+        let lane_rect = subs.then(|| Rect::from_min_size(rect.min + vec2(0.0, RULER_H), vec2(rect.width(), LANE_H)));
         let width = rect.width().max(1.0);
         // A new width (a panel resized, the window zoomed) keeps the same stretch in view.
         let mut view = ev.view.map_or_else(
@@ -382,7 +394,7 @@ impl StingerApp {
             }
         }
 
-        self.paint_editor_wave(ui, rect, &t, &audio, &ev.pyramid, view, ev.cursor, shown_sel, locked);
+        self.paint_editor_wave(ui, rect, lane_h, &t, &audio, &ev.pyramid, view, ev.cursor, shown_sel, locked);
 
         // The marks: drawn above, and controls of their own.
         let x_of = |sec: f64| rect.left() + view.x_of(sec * ratef);
@@ -402,7 +414,7 @@ impl StingerApp {
             let x = x_of(at).clamp(rect.left(), rect.right());
             let strip = match mark {
                 Mark::Marker(_) => Rect::from_center_size(pos2(x, rect.bottom() - 9.0), vec2(14.0, 18.0)),
-                Mark::Handle(_) => Rect::from_x_y_ranges(x - 5.0..=x + 5.0, rect.top() + RULER_H..=rect.bottom()),
+                Mark::Handle(_) => Rect::from_x_y_ranges(x - 5.0..=x + 5.0, rect.top() + RULER_H + lane_h..=rect.bottom()),
             };
             let hr = marks_ui.interact(strip, resp.id.with(mark_key(mark)), Sense::click_and_drag());
             let (mut name, tip) = match mark {
@@ -483,6 +495,10 @@ impl StingerApp {
             let ruler = ui.input(|i| i.pointer.hover_pos()).is_some_and(on_ruler);
             ui.ctx().set_cursor_icon(if ruler { egui::CursorIcon::Grab } else { egui::CursorIcon::Text });
         }
+        if let Some(lr) = lane_rect {
+            let (cursor, snap_on) = (ev.cursor, ev.snap);
+            self.subtitle_lane(ui, lr, rect, &t, &audio, &mut ev.lane, view, snap_on, cursor, (s, e), locked, actions);
+        }
         ev.view = Some(view);
         ev.width = width;
 
@@ -499,19 +515,22 @@ impl StingerApp {
         });
         egui::ScrollArea::both().id_salt("editor-below").auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 6.0;
+            // What to do at the cursor and with the selection: icon buttons (D-276), each
+            // named as its text used to read, Reset Trim in words.
             ui.horizontal_wrapped(|ui| {
                 let at = ev.cursor;
                 let why = |other: &'static str| if locked { tips::LOCKED_WHY } else { other };
-                let add = theme::name(ui.add_enabled(at.is_some() && !locked, theme::small(egui::Button::new("+ Marker at cursor"))), "Add marker at cursor");
-                if theme::hint_or(add, "Add a marker where the cursor is", why("Click the waveform (or type a Cursor time) to place the cursor first")).clicked() {
+                ui.weak("Cursor");
+                let add = icons::button(ui, Glyph::MarkerAdd, "Add marker at cursor", at.is_some() && !locked, false);
+                if theme::hint_or(add, "Add Marker at Cursor: a marker where the cursor is", why("Click the waveform (or type a Cursor time) to place the cursor first")).clicked() {
                     actions.push(inv!("tile.markerAdd", {"tile": id, "at": at}).into());
                 }
-                let trim = ui.add_enabled(at.is_some_and(|c| c < e) && !locked, theme::small(egui::Button::new("Start here")));
-                if theme::hint_or(trim, "Move the trim start to the cursor", why("Place the cursor before the end first")).clicked() {
+                let trim = icons::button(ui, Glyph::StartHere, "Start here", at.is_some_and(|c| c < e) && !locked, false);
+                if theme::hint_or(trim, "Start Here: move the trim start to the cursor", why("Place the cursor before the end first")).clicked() {
                     Handle::Start.set(&mut t, at.unwrap_or(s), dur);
                 }
-                let trim = ui.add_enabled(at.is_some_and(|c| c > s) && !locked, theme::small(egui::Button::new("End here")));
-                if theme::hint_or(trim, "Move the trim end to the cursor", why("Place the cursor after the start first")).clicked() {
+                let trim = icons::button(ui, Glyph::EndHere, "End here", at.is_some_and(|c| c > s) && !locked, false);
+                if theme::hint_or(trim, "End Here: move the trim end to the cursor", why("Place the cursor after the start first")).clicked() {
                     Handle::End.set(&mut t, at.unwrap_or(e), dur);
                 }
                 let reset = ui.add_enabled(!locked, theme::small(egui::Button::new("Reset Trim")));
@@ -519,13 +538,12 @@ impl StingerApp {
                     t.start = 0.0;
                     t.end = None;
                 }
-            });
-            // What to do with the selection.
-            ui.horizontal_wrapped(|ui| {
+                ui.separator();
+                ui.weak("Selection");
                 let sel = selection;
-                let trim = ui.add_enabled(sel.is_some() && !locked, theme::small(egui::Button::new("Trim to Selection")));
+                let trim = icons::button(ui, Glyph::TrimSelection, "Trim to Selection", sel.is_some() && !locked, false);
                 let why = if locked { tips::LOCKED_WHY } else { NO_SELECTION };
-                if theme::hint_or(trim, "Play just the selected stretch: move the trim start and end to its edges", why).clicked() {
+                if theme::hint_or(trim, "Trim to Selection: play just the selected stretch: move the trim start and end to its edges", why).clicked() {
                     if let Some((a, b)) = sel {
                         t.start = a;
                         t.end = if dur - b < 1e-3 { None } else { Some(b) };
@@ -533,7 +551,7 @@ impl StingerApp {
                 }
                 // The vamp lies inside the trim and lasts at least 50 ms.
                 let inside = sel.map(|(a, b)| (a.max(s), b.min(e))).filter(|(a, b)| b - a >= 0.05);
-                let vamp = ui.add_enabled(inside.is_some() && !locked, theme::small(egui::Button::new("Vamp Selection")));
+                let vamp = icons::button(ui, Glyph::VampSelection, "Vamp Selection", inside.is_some() && !locked, false);
                 let why = if locked {
                     tips::LOCKED_WHY
                 } else if sel.is_some() {
@@ -541,23 +559,25 @@ impl StingerApp {
                 } else {
                     NO_SELECTION
                 };
-                if theme::hint_or(vamp, "Loop the selected stretch until the next press lets it go (the part inside the trim)", why).clicked() {
+                if theme::hint_or(vamp, "Vamp Selection: loop the selected stretch until the next press lets it go (the part inside the trim)", why).clicked() {
                     t.vamp = inside;
                 }
                 let label = if playing { "Stop" } else { "Play Selection" };
-                let play = ui.add_enabled(sel.is_some() || playing, theme::small(egui::Button::new(label)));
-                let tip = if playing { "Stop this tile now" } else { "Play just the selected stretch, once, on the Preview output if one is set in Settings" };
+                let play = icons::button(ui, if playing { Glyph::Stop } else { Glyph::PlaySelection }, label, sel.is_some() || playing, false);
+                let tip = if playing { "Stop: stop this tile now" } else { "Play Selection: just the selected stretch, once, on the Preview output if one is set in Settings" };
                 if theme::hint_or(play, tip, NO_SELECTION).clicked() {
                     match sel {
                         Some((a, b)) if !playing => actions.push(inv!("tile.preview", {"tile": id, "from": a, "to": b}).into()),
                         _ => actions.push(inv!("tile.preview", {"tile": id}).into()),
                     }
                 }
-                let clear = ui.add_enabled(sel.is_some(), theme::small(egui::Button::new("Clear Selection")));
-                if theme::hint_or(clear, "Select nothing (a click on the waveform does too)", "Nothing is selected").clicked() {
+                let clear = icons::button(ui, Glyph::ClearSelection, "Clear Selection", sel.is_some(), false);
+                if theme::hint_or(clear, "Clear Selection: select nothing (a click on the waveform does too)", "Nothing is selected").clicked() {
                     actions.push(inv!("view.editorSelect", {"clear": true}).into());
                 }
             });
+            // Without subtitles the row offers Transcribe (D-277).
+            self.subtitle_tools(ui, &t, &mut ev.lane, ev.cursor, locked, actions);
             self.editor_times(ui, &mut t, &mut ev, &audio, locked, actions);
             ui.separator();
             self.cue_points(ui, &mut t, dur, false, locked, actions);
@@ -679,14 +699,15 @@ impl StingerApp {
     /// cursor and the playhead.
     /// In a locked set the handles and markers are greyed, as their controls are.
     #[allow(clippy::too_many_arguments)]
-    fn paint_editor_wave(&self, ui: &Ui, rect: Rect, t: &Tile, audio: &DecodedAudio, pyramid: &PeakPyramid, view: View, cursor: Option<f64>, selection: Option<(f64, f64)>, locked: bool) {
+    fn paint_editor_wave(&self, ui: &Ui, rect: Rect, lane_h: f32, t: &Tile, audio: &DecodedAudio, pyramid: &PeakPyramid, view: View, cursor: Option<f64>, selection: Option<(f64, f64)>, locked: bool) {
         let tokens = Tokens::get(ui.ctx());
         let p = ui.painter_at(rect);
         let ratef = f64::from(audio.sample_rate.max(1));
         let dur = audio.duration().max(1e-6);
         let x_of = |sec: f64| rect.left() + view.x_of(sec * ratef);
         p.rect_filled(rect, 6.0, Color32::from_black_alpha(90));
-        let wave = Rect::from_x_y_ranges(rect.x_range(), rect.top() + RULER_H..=rect.bottom());
+        // Under the ruler and the subtitle lane, when there is one.
+        let wave = Rect::from_x_y_ranges(rect.x_range(), rect.top() + RULER_H + lane_h..=rect.bottom());
         let mid = wave.center().y;
         let half = wave.height() / 2.0 - 4.0;
         let color = theme::lighten(theme::console_tile(ui.ctx(), t.color), 0.25);

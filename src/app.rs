@@ -42,8 +42,13 @@ mod grid;
 mod pad_options;
 use pad_options::PadOption;
 mod editor;
+mod subtitle_lane;
+mod icons;
 mod inspector;
 mod windows;
+mod search_box;
+mod transcribe_ui;
+use search_box::dim_unmatched;
 #[cfg(target_os = "ios")]
 mod touch;
 #[cfg(test)]
@@ -177,8 +182,20 @@ pub struct StingerApp {
     /// With the hold guard on: when Esc went down, and whether Stop All has run for it.
     esc_down: Option<(Instant, bool)>,
     capturing_hotkey: bool,
-    /// `view.search` opened the search box: focus it on the next frame it's drawn.
+    /// `view.search` asked for the search box: focus it on the next frame it's drawn.
     search_focus: bool,
+    /// The hit Up and Down have chosen in the search list, and whether to scroll to it.
+    search_pick: usize,
+    search_scroll: bool,
+    /// Where the search list was last drawn: it stays while the pointer is on it.
+    search_list_rect: Option<Rect>,
+    /// Esc in the search box: give the keyboard back to the board.
+    search_to_board: bool,
+    /// The search box had the keyboard last frame (Esc in it clears it).
+    search_had_focus: bool,
+    /// A script's `findlist` step: show the search list without the keyboard (a
+    /// snapshot run's window never has the keyboard).
+    search_list_pinned: bool,
     tile_rects: Vec<(Uuid, usize, Rect)>,
     /// The grid as drawn in Rows mode, for working out where files and tiles land.
     row_grid: Option<(grid::Layout, Grid<usize>)>,
@@ -260,6 +277,8 @@ pub struct StingerApp {
     /// Set files opened from the file manager, waiting for Import or Cancel; the first is
     /// asked about.
     confirm_sets: Vec<PathBuf>,
+    /// `set.transcribe {ask}`: sets waiting for a yes (src/app/transcribe_ui.rs).
+    confirm_transcribe: Vec<transcribe_ui::Confirm>,
     /// Themes set files brought, waiting for Use it or Not now: (id, name).
     confirm_themes: Vec<(String, String)>,
     /// The QuipClipper first-contact prompt, while it's up (src/app/quip_connect.rs).
@@ -348,6 +367,12 @@ impl StingerApp {
             esc_down: None,
             capturing_hotkey: false,
             search_focus: false,
+            search_pick: 0,
+            search_scroll: false,
+            search_list_rect: None,
+            search_to_board: false,
+            search_had_focus: false,
+            search_list_pinned: false,
             hotkeys,
             hotkeys_synced: u64::MAX,
             #[cfg(target_os = "linux")]
@@ -391,6 +416,7 @@ impl StingerApp {
             editor_wave: None,
             zoom_draft: None,
             confirm_sets: Vec::new(),
+            confirm_transcribe: Vec::new(),
             confirm_themes: Vec::new(),
             quip_prompt: None,
             quip_declined: Vec::new(),
@@ -497,6 +523,8 @@ impl StingerApp {
                     Effect::Window { window, op } => self.window_effect(ctx, window, op),
                     Effect::ClearClip => self.meter.clip = false,
                     Effect::FocusSearch => self.search_focus = true,
+                    Effect::FocusTile(id) => self.focus_script = Some(id),
+                    Effect::LeaveSearch => self.search_to_board = true,
                     Effect::ExportAudio { tiles, set } => self.export = Some(export_ui::ExportDialog::new(tiles, set)),
                     Effect::ConfirmSetFile(path) => {
                         if !self.confirm_sets.contains(&path) {
@@ -508,6 +536,10 @@ impl StingerApp {
                         self.confirm_themes.push((id, name));
                     }
                     Effect::ConfirmQuip(ask) => self.offer_quip(*ask),
+                    Effect::ConfirmTranscribe { set, tiles, subtitled, engine, sends_to } => {
+                        self.confirm_transcribe.retain(|c| c.set != set);
+                        self.confirm_transcribe.push(transcribe_ui::Confirm { set, tiles, subtitled, gaps: false, engine, sends_to });
+                    }
                     Effect::Reveal(id) => {
                         self.reveal = Some(id);
                         ctx.request_repaint();
@@ -580,7 +612,7 @@ impl StingerApp {
     /// later, instead of dragging it; the master volume keeps those keys otherwise, and
     /// in a locked set.
     fn handle_move_keys(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
-        let Some(id) = self.focused_tile.filter(|id| !self.tile_locked(*id) && self.ctl.search.is_none()) else { return };
+        let Some(id) = self.focused_tile.filter(|id| !self.tile_locked(*id)) else { return };
         if ctx.memory(|m| m.focused()) != Some(egui::Id::unique(("tile", id))) && ctx.memory(|m| m.focused()) != Some(egui::Id::unique(("cue-row", id))) {
             return;
         }
@@ -1036,7 +1068,7 @@ impl StingerApp {
         match action {
             Action::Run(inv) => self.run(inv),
             // A double-click on a cue row is Play Selection on it (D-197): one cue at a time.
-            Action::Press(id) if self.ctl.search.is_none() && self.ctl.store.library.locate(id).is_some_and(|(si, _)| si == self.ctl.set_idx()) && self.ctl.current_set().layout == Layout::List => {
+            Action::Press(id) if self.ctl.store.library.locate(id).is_some_and(|(si, _)| si == self.ctl.set_idx()) && self.ctl.current_set().layout == Layout::List => {
                 self.run(inv!("cue.go", {"tile": id}));
             }
             Action::Press(id) => {
@@ -1114,7 +1146,15 @@ impl StingerApp {
                 "overlay" => inv!("tile.set", {"tile": tile, "pictureLayer": "overlay", "pictureOpacity": 0.9}),
                 "fit" => inv!("tile.set", {"tile": tile, "pictureFit": "fit"}),
                 "paste" => inv!("tile.paste"),
-                "find" => inv!("view.search", {"query": arg}),
+                // Words in the search box, with the keyboard there (its list shows).
+                "find" => {
+                    self.search_focus = true;
+                    inv!("view.search", {"query": arg})
+                }
+                "findlist" => {
+                    self.search_list_pinned = true;
+                    continue;
+                }
                 // The QuipClipper window, and a search in it.
                 "quip" => inv!("view.quip", {"open": true}),
                 "quipfind" => inv!("view.quip", {"query": arg}),
@@ -1140,12 +1180,54 @@ impl StingerApp {
                     continue;
                 }
                 "normalize" => inv!("tile.normalize"),
+                // Transcribe tile N (D-277), and the set's tiles without subtitles (it asks).
+                "transcribe" => inv!("tile.transcribe", {"tile": tile}),
+                "transcribeset" => inv!("set.transcribe", {"ask": true}),
                 "export" => inv!("tile.render"),
                 // The waveform editor on tile N, a vamp and a marker on it, and zooming
                 // in N doublings around the cursor or the middle.
                 "editor" => inv!("view.editor", {"tile": tile}),
                 "vamp" => inv!("tile.set", {"tile": tile, "vampStart": 0.25, "vampEnd": 0.6}),
                 "marker" => inv!("tile.markerAdd", {"tile": tile, "at": 0.15, "name": "Hit"}),
+                // Sample subtitles on tile N, as QuipClipper sends them (D-260).
+                "subtitles" => inv!("tile.subtitlesSet", {"tile": tile, "cues_source": {"kind": "srt", "lang": "en"}, "cues": [
+                    {"start": 0.0, "end": 0.6, "text": "Ladies and gentlemen,"},
+                    {"start": 0.6, "end": 1.4, "text": "welcome to game night!"},
+                    {"start": 1.4, "end": 2.2, "text": "Tonight's first round\nis about to begin."},
+                    {"start": 40.0, "end": 41.0, "text": "A line after the trim."}
+                ]}),
+                // Lines on tile N that its speech can be aligned to, the first auto-aligned
+                // (a suggestion) and a word of the second moved by hand, and word W of
+                // line 1 selected in the editor's lane (D-267).
+                "subdemo" => inv!("tile.subtitlesSet", {"tile": tile, "cues_source": {"kind": "srt", "lang": "en"}, "cues": [
+                    {"start": 0.05, "end": 1.75, "text": "Welcome back, everybody!"},
+                    {"start": 2.0, "end": 3.5, "text": "Are we ready, players?"}
+                ]}),
+                "subauto" => inv!("tile.subtitleAutoAlign", {"tile": tile, "line": 1}),
+                "subnudge" => inv!("tile.subtitleEdge", {"tile": tile, "line": 2, "word": 2, "edge": "start", "at": 2.3}),
+                // Word W of line 1 selected in the open editor, with the keyboard on it.
+                "subsel" => {
+                    if let Some(v) = self.editor_view.as_mut() {
+                        v.lane.focus(0, n);
+                    }
+                    inv!("view.editorWord", {"line": 1, "word": n + 1})
+                }
+                // A line added by hand on tile N in the gap at 1.76 to 1.98 s (D-301), and line L's bar
+                // given the keyboard (to move or delete it).
+                "subadd" => inv!("tile.subtitleAdd", {"tile": tile, "text": "(cheering)", "start": 1.76, "end": 1.98}),
+                "subline" => {
+                    if let Some(v) = self.editor_view.as_mut() {
+                        v.lane.focus_line(n);
+                    }
+                    inv!("view.editorWord", {"line": n + 1, "word": 1})
+                }
+                // What the arrows move on the selected word (start, word or end), and a nudge.
+                "subgrip" => inv!("view.editorWord", {"grip": arg}),
+                "subnudgekey" => {
+                    let key = if arg == "left" { Key::ArrowLeft } else { Key::ArrowRight };
+                    ctx.input_mut(|i| i.events.push(egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }));
+                    continue;
+                }
                 // A selection in the open editor, from N s for 3 s.
                 "eselect" => inv!("view.editorSelect", {"from": n as f64, "to": n as f64 + 3.0}),
                 "ezoom" => {
@@ -1243,6 +1325,11 @@ impl StingerApp {
     /// What changes the board (Sidebar, Add Sound, Grid | List, Inspector) is in the bottom
     /// bar (M22).
     fn toolbar(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
+        // The search box's widths in Console's toolbar (D-263).
+        const SEARCH_ACTIVE_MIN: f32 = 160.0;
+        const SEARCH_MAX: f32 = 280.0;
+        const SEARCH_IDLE_MIN: f32 = 150.0;
+        const SEARCH_IDLE_MAX: f32 = 240.0;
         let t = Tokens::get(ui.ctx());
         ui.horizontal(|ui| {
             ui.set_height(48.0);
@@ -1252,8 +1339,14 @@ impl StingerApp {
                 ui.add_space((crate::titlebar::inset(ui.ctx()).x - 14.0).max(0.0));
             }
             // A narrow (e.g. tiled) window shrinks the wordmark to its tile mark, so Stop
-            // All and Settings always have room.
-            paint_wordmark(ui, ui.available_width() < 720.0);
+            // All, Settings, Random and the search key have room.
+            paint_wordmark(ui, ui.available_width() < 960.0);
+            // The search box (D-263) is placed last, in what the right-hand groups leave:
+            // while it's in use it needs SEARCH_ACTIVE_MIN, and Random and the meter give
+            // way to it; otherwise the counter comes first and the box is a magnifier key
+            // when there's no room for a field.
+            let active = self.search_active(ui.ctx());
+            let reserve = if active { SEARCH_ACTIVE_MIN + 10.0 } else { 44.0 };
 
             ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
@@ -1269,16 +1362,26 @@ impl StingerApp {
                 self.transport_keys(ui, actions);
                 // Narrow windows drop the counter, then the meter, rather than overlap
                 // the left-hand groups.
-                if ui.available_width() > 230.0 {
+                if ui.available_width() - reserve > 230.0 {
                     self.master_section(ui, &t);
                 }
                 // Random (D-171), left of the meter; it stays when the counter goes.
-                if ui.available_width() > 110.0 {
+                if ui.available_width() - reserve > 110.0 {
                     self.random_key(ui, actions);
                 }
                 let room = ui.available_width() - 12.0;
-                if room >= 190.0 {
-                    self.counter(ui, &t, room.min(300.0));
+                // An idle box gets a field only when the counter keeps its full width.
+                let field = if active { (room - 200.0).clamp(SEARCH_ACTIVE_MIN, SEARCH_MAX).min(room) } else { (room - 300.0 - 10.0).min(SEARCH_IDLE_MAX) };
+                let field = if !active && field < SEARCH_IDLE_MIN { 34.0 } else { field };
+                let counter = (room - field - 10.0).min(300.0);
+                if counter >= 190.0 {
+                    self.counter(ui, &t, counter);
+                }
+                let rect = Rect::from_min_size(pos2(ui.max_rect().left(), ui.max_rect().center().y - 17.0), vec2(field.max(34.0), 34.0));
+                if field > 34.0 {
+                    self.search_box(ui, rect.shrink2(vec2(0.0, 1.0)), false, actions);
+                } else {
+                    self.search_key(ui, Rect::from_min_size(rect.min, vec2(34.0, 34.0)), false, actions);
                 }
             });
         });
@@ -1642,6 +1745,13 @@ impl StingerApp {
                 if theme::hint(theme::small_button(ui, "Cancel"), "Stop exporting; a half-written file is removed").clicked() {
                     self.run(inv!("render.cancel"));
                 }
+            } else if let Some(what) = self.ctl.transcribe_summary() {
+                ui.add_space(8.0);
+                ui.spinner();
+                ui.label(RichText::new(what).color(t.text_dim));
+                if theme::hint(theme::small_button(ui, "Cancel"), "Stop transcribing; nothing is changed").clicked() {
+                    self.run(inv!("transcribe.cancel"));
+                }
             } else if self.ctl.store.is_loading() {
                 ui.add_space(8.0);
                 ui.spinner();
@@ -1856,6 +1966,10 @@ impl StingerApp {
                     {
                         actions.push(inv!("settings.checkUpdates", {"on": check}).into());
                     }
+                    ui.end_row();
+
+                    ui.label("Subtitles");
+                    self.transcribe_settings(ui, actions);
                     ui.end_row();
 
                     ui.label("Speech");
@@ -2300,6 +2414,7 @@ impl StingerApp {
             if theme::hint_or(theme::name(edit, "Edit waveform"), editor::OPEN_TIP, why).clicked() {
                 actions.push(inv!("view.editor", {"tile": tile.id, "open": true}).into());
             }
+            transcribe_ui::tile_menu_item(ui, &self.ctl, tile, locked, actions);
             let previewing = self.ctl.statuses.contains_key(&tile.id);
             let preview = ui.add_enabled(tile.file.is_some(), egui::Button::new(if previewing { "Stop" } else { "Play" }));
             let (tip, why) = (if previewing { "Stop this tile now" } else { "Play this tile, whatever its play mode" }, "This tile has no sound yet");
@@ -2449,6 +2564,9 @@ impl StingerApp {
             // Count down in whole seconds, rounding up so a sounding tile never shows 0:00.
             return format!("−{}", format_clock((s.remaining() - 1e-3).max(0.0).ceil(), false));
         }
+        if let Some(b) = self.ctl.transcriber.busy(tile.id) {
+            return transcribe_ui::busy_text(b);
+        }
         match self.ctl.store.media(tile) {
             None => "Drop audio here".into(),
             Some(Media::Loading) => match self.ctl.store.import_of(tile) {
@@ -2469,7 +2587,7 @@ impl StingerApp {
         }
     }
 
-    /// The central panel: the search box when it's open, then the grid or cue list.
+    /// The central panel: the grid or cue list (or the waveform editor).
     fn board(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         // Only a Rows grid drawn this frame says where files land.
         self.row_grid = None;
@@ -2479,9 +2597,6 @@ impl StingerApp {
             return;
         }
         self.editor_view = None;
-        if self.ctl.search.is_some() {
-            self.search_bar(ui, actions);
-        }
         match self.ctl.current_set().layout {
             Layout::Grid => self.grid(ui, actions),
             Layout::List => self.list(ui, actions),
@@ -2489,66 +2604,22 @@ impl StingerApp {
         self.reveal = None;
     }
 
-    /// ⌘/Ctrl+F: a box that filters the board across every set. Enter plays the top hit,
-    /// Esc (while typing) or ✕ closes it.
-    fn search_bar(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
-        let t = Tokens::get(ui.ctx());
-        let mut query = self.ctl.search.clone().unwrap_or_default();
-        let hits = self.ctl.search_hits(&query);
-        ui.horizontal(|ui| {
-            let resp = theme::text_field(
-                ui,
-                egui::TextEdit::singleline(&mut query).hint_text("Find tiles in every set, by title or notes").desired_width(360.0),
-            );
-            let resp = theme::hint_keys(theme::name(resp, "Find"), "Find tiles in every set by title or notes; the board shows only the matches", "Enter plays the first, Esc closes");
-            if std::mem::take(&mut self.search_focus) {
-                resp.request_focus();
-            }
-            if resp.changed() {
-                actions.push(inv!("view.search", {"query": query}).into());
-            }
-            if resp.lost_focus() {
-                if ui.input(|i| i.key_pressed(Key::Enter)) {
-                    actions.push(inv!("view.search", {"play": true}).into());
-                } else if ui.input(|i| i.key_pressed(Key::Escape)) {
-                    actions.push(inv!("view.search", {"close": true}).into());
-                }
-            }
-            let sets = hits.iter().filter_map(|id| self.ctl.store.library.locate(*id)).map(|(s, _)| s).collect::<std::collections::HashSet<_>>().len();
-            let summary = match (query.trim().is_empty(), hits.len()) {
-                (true, _) => "Type to filter; Enter plays the first tile".to_owned(),
-                (false, 0) => "No tiles match".to_owned(),
-                (false, n) => format!("{n} tile{} in {sets} set{}; Enter plays the first", if n == 1 { "" } else { "s" }, if sets == 1 { "" } else { "s" }),
-            };
-            ui.label(RichText::new(summary).color(t.text_dim));
-            ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                if theme::hint_keys(theme::name(theme::small_button(ui, "🗙"), "Close search"), "Close the search and show the whole set again", "Esc in the box").clicked() {
-                    actions.push(inv!("view.search", {"close": true}).into());
-                }
-            });
-        });
-        ui.add_space(10.0);
-    }
-
     fn grid(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         let set = self.ctl.current_set();
         // Fixed ids carry the set: a set window's board is drawn in the same pass (D-223).
         let set_id = set.id;
         let lib = &self.ctl.store.library;
-        // While searching, the board holds the hits from every set and no add slot.
-        let hits = self.ctl.search.as_deref().map(|q| self.ctl.search_hits(q));
-        let tiles: Vec<&Tile> = match &hits {
-            Some(h) => h.iter().filter_map(|id| lib.tile(*id)).collect(),
-            None => set.tiles.iter().collect(),
-        };
-        // Search hits come from several sets, so they have no rows (D-114).
-        let mode = if hits.is_some() { GridMode::Columns } else { lib.grid };
+        let tiles: Vec<&Tile> = set.tiles.iter().collect();
+        // While the search box holds a query, the tiles it doesn't find are dimmed in
+        // place: nothing moves (D-265).
+        let dim = self.search_query();
+        let mode = lib.grid;
         let rows_mode = mode == GridMode::Rows;
         let slots = set.slots();
         let view_h = ui.available_height();
         let ctx = ui.ctx().clone();
         // What's being dragged over a Rows grid: a pad or files (never into a locked set).
-        let locked = set.locked && hits.is_none();
+        let locked = set.locked;
         let from = rows_mode
             .then(|| egui::DragAndDrop::payload::<Uuid>(&ctx))
             .flatten()
@@ -2584,12 +2655,11 @@ impl StingerApp {
             let auto_sizing = grid::Sizing { min_w: if is_panel { grid::PANEL_ROW_MIN_WIDTH } else { grid::ROW_MIN_WIDTH }, height, min_h };
             let rows_sizing = grid::Sizing { min_w: grid::PAD_MIN_WIDTH, ..auto_sizing };
             // A locked set has no add slot.
-            let count = tiles.len() + usize::from(hits.is_none() && !locked);
+            let count = tiles.len() + usize::from(!locked);
             let origin = ui.cursor().min + vec2(reach, reach);
             let columns = set.columns as usize;
             let fill = Some((view_h - 1.0).floor());
-            // The lines Shift-click's rectangle follows when they aren't the set's rows
-            // (search hits, from several sets: the run in the set's order).
+            // The lines Shift-click's rectangle follows when they aren't the set's rows.
             let (base, shown_columns) = match mode {
                 GridMode::Rows => (grid::rows(origin, &rows::slot_counts(&slots), !locked, columns, avail, rows_sizing, fill), None),
                 GridMode::Auto => {
@@ -2599,8 +2669,7 @@ impl StingerApp {
                 GridMode::Columns => {
                     let min_w = if is_panel { panel::TILE_MIN_WIDTH } else { TILE_MIN_WIDTH };
                     let c = fit_columns(set.columns.max(1) as usize, avail, min_w, grid::GAP);
-                    let lines = if hits.is_some() { 1 } else { c };
-                    (grid::rows(origin, &grid::uniform(count, c), false, c, avail, grid::Sizing { min_w, height, min_h }, None), Some(lines))
+                    (grid::rows(origin, &grid::uniform(count, c), false, c, avail, grid::Sizing { min_w, height, min_h }, None), Some(c))
                 }
             };
             // The drop under the pointer, worked out on the board as it is (D-141).
@@ -2694,24 +2763,22 @@ impl StingerApp {
                     if resp.drag_started() {
                         grab = resp.interact_pointer_pos().map(|p| p - rect.min);
                     }
-                    // A hit's place is the one in its own set.
-                    let (set_name, i) = match lib.locate(tile.id) {
-                        Some((si, ti)) if hits.is_some() => (Some(lib.sets[si].name.as_str()), ti),
-                        _ => (None, i),
-                    };
                     let on = Some(self.ctl.is_selected(tile.id));
                     let row = speak_rows.then_some(cell.row);
-                    let resp = theme::role(resp, AxRole::Button, self.tile_label(tile, i, set_name, None, row), on);
-                    let resp = theme::hint(resp, self.tile_tip(tile, set_name));
+                    let resp = theme::role(resp, AxRole::Button, self.tile_label(tile, i, None, row), on);
+                    let resp = theme::hint(resp, self.tile_tip(tile));
                     rects.push((tile.id, i, rect));
                     // In Rows mode the grid works out where a dragged tile lands (below).
-                    let slot = (rows_mode && hits.is_none()).then_some((cell.row, cell.at));
+                    let slot = rows_mode.then_some((cell.row, cell.at));
                     self.tile_interaction(ui, &resp, tile, i, !rows_mode, slot, shown_columns, actions);
                     let drop_hover = !rows_mode && !locked && resp.dnd_hover_payload::<Uuid>().is_some();
                     let paint = if is_panel { panel::paint_tile } else { paint_tile };
                     let peaks = self.shown_peaks(tile);
                     let status = self.ctl.statuses.get(&tile.id);
                     paint(ui, rect, tile, status, &self.time_label(tile, status), self.tile_flags(ui, tile, peaks.as_deref().map(|p| p.as_slice()), &resp, drop_hover));
+                    if dim.as_ref().is_some_and(|q| !q.matches(tile)) {
+                        dim_unmatched(ui, rect);
+                    }
                     if self.reveal == Some(tile.id) {
                         ui.scroll_to_rect(rect, Some(Align::Center));
                     }
@@ -2918,25 +2985,15 @@ impl StingerApp {
         let mut reset = false;
 
         let is_panel = theme::is_panel(ui.ctx());
-        // While searching, the rows are the hits from every set: no list bar or add slot.
-        let hits = self.ctl.search.as_deref().map(|q| self.ctl.search_hits(q));
-        if hits.is_none() {
-            self.set_notes(ui, si);
-            ui.add_space(6.0);
-        }
+        self.set_notes(ui, si);
+        ui.add_space(6.0);
         // The bar under the list (D-199): Continuous | Queued, the cross-fade, Reset List;
         // on a narrow board in two lines.
         let narrow = ui.available_width() < 560.0;
-        let bar_h = match (&hits, narrow) {
-            (Some(_), _) => 0.0,
-            (None, false) => 46.0,
-            (None, true) => 86.0,
-        };
-        let lib = &self.ctl.store.library;
-        let rows: Vec<(usize, &Tile)> = match &hits {
-            Some(h) => h.iter().filter_map(|id| lib.locate(*id).map(|(s, i)| (i, &lib.sets[s].tiles[i]))).collect(),
-            None => set.tiles.iter().enumerate().collect(),
-        };
+        let bar_h = if narrow { 86.0 } else { 46.0 };
+        // The rows a search doesn't find are dimmed in place, as on the grid.
+        let dim = self.search_query();
+        let rows: Vec<(usize, &Tile)> = set.tiles.iter().enumerate().collect();
 
         let mut rects = Vec::new();
         let mut focused = None;
@@ -2949,7 +3006,7 @@ impl StingerApp {
                 // The focused row is selected, so it's the next cue: Enter is GO (D-192),
                 // which also lets a vamping cue play on. Taken before `interact`, which
                 // would make it a click on the row.
-                if hits.is_none() && ui.memory(|m| m.has_focus(row_id)) && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)) {
+                if ui.memory(|m| m.has_focus(row_id)) && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter)) {
                     actions.push(inv!("cue.go").into());
                 }
                 let resp = ui.interact(rect, row_id, Sense::click_and_drag());
@@ -2962,14 +3019,14 @@ impl StingerApp {
                 }
                 let played = self.ctl.played.contains(&tile.id);
                 cue_mark_button(ui, rect, tile.id, i, played, actions);
-                let set_name = hits.as_ref().and_then(|_| lib.locate(tile.id)).map(|(si, _)| lib.sets[si].name.as_str());
                 let on = Some(self.ctl.is_selected(tile.id));
-                let is_next_cue = hits.is_none() && Some(i) == queued;
-                let resp = theme::role(resp, AxRole::Button, self.tile_label(tile, i, set_name, Some(is_next_cue), None), on);
-                let resp = theme::hint(resp, self.tile_tip(tile, set_name));
+                let is_next_cue = Some(i) == queued;
+                let resp = theme::role(resp, AxRole::Button, self.tile_label(tile, i, Some(is_next_cue), None), on);
+                let resp = theme::hint(resp, self.tile_tip(tile));
                 self.tile_interaction(ui, &resp, tile, i, true, None, Some(1), actions);
                 let status = self.ctl.statuses.get(&tile.id);
-                let is_next = hits.is_none() && Some(i) == queued;
+                let is_next = Some(i) == queued;
+                let dimmed = dim.as_ref().is_some_and(|q| !q.matches(tile));
                 if is_panel {
                     let peaks = if self.ctl.store.library.show_waveforms { self.ctl.store.peaks(tile) } else { None };
                     let duration = self.ctl.store.audio(tile).map(|a| a.duration());
@@ -2987,9 +3044,10 @@ impl StingerApp {
                         played,
                         focus: ui.memory(|m| m.has_focus(resp.id)).then_some(resp.id),
                     });
-                    if hits.is_none() {
-                        self.link_strip(ui, tile, next_cue(&set.tiles, i + 1).is_some(), true);
+                    if dimmed {
+                        dim_unmatched(ui, rect);
                     }
+                    self.link_strip(ui, tile, next_cue(&set.tiles, i + 1).is_some(), true);
                     continue;
                 }
                 let p = ui.painter();
@@ -3126,11 +3184,12 @@ impl StingerApp {
                 if let Some(rec) = rec {
                     p.rect_stroke(rect, 5.0, Stroke::new(2.0_f32, theme::with_alpha(t.error, rec.pulse)), StrokeKind::Outside);
                 }
-                if hits.is_none() {
-                    self.link_strip(ui, tile, next_cue(&set.tiles, i + 1).is_some(), false);
+                if dimmed {
+                    dim_unmatched(ui, rect);
                 }
+                self.link_strip(ui, tile, next_cue(&set.tiles, i + 1).is_some(), false);
             }
-            if hits.is_some() || set.locked {
+            if set.locked {
                 return;
             }
             let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 44.0), Sense::click());
@@ -3148,20 +3207,18 @@ impl StingerApp {
                 actions.push(self.drag_move(ui.ctx(), *src, json!({"to": u32::MAX})));
             }
         });
-        if hits.is_none() {
-            ui.add_space(6.0);
-            let locked = self.ctl.store.library.sets[si].locked;
-            if is_panel {
-                panel::list_bar(ui, narrow, (&mut auto_advance, &mut crossfade), &mut reset, locked);
-            } else {
-                list_bar(ui, narrow, (&mut auto_advance, &mut crossfade), &mut reset, locked);
-            }
+        ui.add_space(6.0);
+        let locked = self.ctl.store.library.sets[si].locked;
+        if is_panel {
+            panel::list_bar(ui, narrow, (&mut auto_advance, &mut crossfade), &mut reset, locked);
+        } else {
+            list_bar(ui, narrow, (&mut auto_advance, &mut crossfade), &mut reset, locked);
         }
         self.tile_rects = rects;
         self.focus_selects(ui, focused, actions);
         // The selection moved on by itself (GO, Next, Continuous): a focused row hands the
         // focus to the newly selected one, so Enter and the arrows go on from there.
-        if hits.is_none() && focused.is_some() && focused == self.focused_tile {
+        if focused.is_some() && focused == self.focused_tile {
             let sel = self.ctl.selected_tile.filter(|s| Some(*s) != focused && self.ctl.selected().len() == 1);
             if let Some(sel) = sel.filter(|s| self.ctl.store.library.sets[si].tiles.iter().any(|t| t.id == *s)) {
                 ui.memory_mut(|m| m.request_focus(egui::Id::unique(("cue-row", sel))));
@@ -3285,7 +3342,7 @@ impl StingerApp {
     fn action_editor(&self, ui: &mut Ui, t: &Tile, actions: &mut Vec<Action>) {
         let Some(a) = &t.action else { return };
         let id = t.id;
-        ui.label(RichText::new("ACTION").small().strong().weak());
+        theme::section_head(ui, "ACTION");
         let with = |list: &[String], r: String| -> Vec<String> { list.iter().cloned().chain([r]).collect() };
         let refs = |a: &crate::model::TileAction| -> Vec<String> {
             a.targets
@@ -3518,7 +3575,8 @@ impl StingerApp {
     /// The Panel layout: a fixed frame, with the panels sized to fit inside it.
     fn panel_panels(&mut self, ui: &mut Ui, actions: &mut Vec<Action>) {
         let area = ui.available_rect_before_wrap();
-        panel::paint_frame(ui.ctx(), area, ui.clip_rect(), crate::brand::PANEL_SUBTITLE, self.ctl.store.library.show_sidebar);
+        let search_active = self.search_active(ui.ctx());
+        panel::paint_frame(ui.ctx(), area, ui.clip_rect(), crate::brand::PANEL_SUBTITLE, self.ctl.store.library.show_sidebar, search_active);
         let none = egui::Frame::NONE;
         egui::Panel::top("toolbar")
             .frame(none)
@@ -3807,6 +3865,7 @@ impl StingerApp {
         self.meter.feed(self.ctl.engine.take_peaks(), dt as f32);
         self.prepare_textures(ctx);
         self.run_script(ctx);
+        self.search_focus_board(ctx);
         if let Some(id) = self.focus_script.take() {
             let row = if self.ctl.current_set().layout == Layout::List { "cue-row" } else { "tile" };
             ctx.memory_mut(|m| m.request_focus(egui::Id::unique((row, id))));
@@ -3886,6 +3945,7 @@ impl StingerApp {
         self.quip_drop(ctx, &mut actions);
         self.confirm_set_window(ctx);
         self.confirm_theme_window(ctx);
+        self.confirm_transcribe_window(ctx);
         self.update_window(ctx);
         self.quip_prompt_window(ctx);
         actions.extend(menu_commands.into_iter().map(|c: Cmd| Action::Run(c.into())));
@@ -3934,6 +3994,7 @@ impl StingerApp {
             // ffmpeg running.
             self.ctl.store.stop_imports();
             self.ctl.stop_renders();
+            self.ctl.stop_transcription();
             if let Err(e) = self.ctl.store.save_now() {
                 eprintln!("{}: failed to save library: {e:#}", crate::brand::SLUG);
             }
@@ -4172,6 +4233,10 @@ fn set_menu(ui: &mut Ui, set: Uuid, n_sets: usize, locked: bool, windowed: bool,
     let (cmd, label, tip) = if locked { ("set.unlock", "Unlock Set", tips::UNLOCK) } else { ("set.lock", "Lock Set", tips::LOCK) };
     if theme::hint(ui.button(label), tip).clicked() {
         actions.push(Invocation::new(cmd, json!({"set": set})).into());
+    }
+    let transcribe = ui.add_enabled(!locked, egui::Button::new("Transcribe Tiles Without Subtitles…"));
+    if theme::hint_or(transcribe, transcribe_ui::SET_TIP, tips::LOCKED_WHY).clicked() {
+        actions.push(inv!("set.transcribe", {"set": set, "ask": true}).into());
     }
     ui.separator();
     // A window of its own, to put on another monitor or workspace (D-224).

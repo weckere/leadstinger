@@ -223,9 +223,44 @@ fn pill(ui: &mut Ui, rect: Rect, id: &str, label: &str, fill: Color32, on: bool)
 
 /// The fixed frame. It goes on egui's shared background layer, the one the panels
 /// draw on, and is painted before them so it stays underneath.
-pub fn paint_frame(ctx: &egui::Context, area: Rect, clip: Rect, subtitle: &str, sidebar: bool) {
+/// The compact title's width, at the top bar's height.
+fn compact_title_w(ctx: &egui::Context) -> f32 {
+    logo_parts(ctx).iter().filter(|(t, _)| !t.is_empty()).map(|(t, c)| ctx.fonts_mut(|f| f.layout_no_wrap(t.to_uppercase(), condensed(TITLE_COMPACT), *c).size().x)).sum()
+}
+
+/// Where the search box goes in the top bar (D-263): the black gap cut into the bar
+/// for it, and whether the gap holds the field or only the magnifier key.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SearchSlot {
+    /// The gap's x range, from the frame's left edge.
+    gap: (f32, f32),
+    field: bool,
+    /// A narrow window's compact title gives way while the box is in use.
+    hide_title: bool,
+}
+
+/// The field's widest, and the narrowest it's drawn at before it becomes a key.
+const SEARCH_MAX: f32 = 300.0;
+const SEARCH_MIN: f32 = 200.0;
+
+fn search_slot_in(ctx: &egui::Context, g: &Geo, active: bool) -> SearchSlot {
+    // Clear of the elbow's inner curve, and some bar before the title's gap.
+    let start = M + g.col + R_IN + 24.0;
+    let end = if g.wide { g.title_x - 12.0 } else { g.cap_x - 14.0 - compact_title_w(ctx) - 14.0 } - 30.0;
+    if end - start >= SEARCH_MIN {
+        SearchSlot { gap: ((end - SEARCH_MAX).max(start), end), field: true, hide_title: false }
+    } else if active {
+        let end = g.cap_x - 44.0;
+        SearchSlot { gap: (start, (start + SEARCH_MAX).min(end)), field: true, hide_title: true }
+    } else {
+        SearchSlot { gap: (end - 44.0, end), field: false, hide_title: false }
+    }
+}
+
+pub fn paint_frame(ctx: &egui::Context, area: Rect, clip: Rect, subtitle: &str, sidebar: bool, search_active: bool) {
     let pal = theme::palette(ctx);
     let g = geo(ctx, area, sidebar);
+    let search = search_slot_in(ctx, &g, search_active);
     let col = g.col;
     let p = ctx.layer_painter(LayerId::background()).with_clip_rect(clip);
     let (w, h) = (g.size.x, g.size.y);
@@ -248,6 +283,8 @@ pub fn paint_frame(ctx: &egui::Context, area: Rect, clip: Rect, subtitle: &str, 
         }
         caps_text(&p, g.o + vec2(g.title_x, M + 56.0), Align2::LEFT_TOP, subtitle, condensed_semi(14.0), theme::panel_dim(ctx));
         g.title_x - 12.0
+    } else if search.hide_title {
+        g.cap_x - 14.0
     } else {
         let font = condensed(TITLE_COMPACT);
         let mut at = g.o + vec2(g.cap_x - 14.0, M - theme::condensed_cap_top() * TITLE_COMPACT);
@@ -258,7 +295,9 @@ pub fn paint_frame(ctx: &egui::Context, area: Rect, clip: Rect, subtitle: &str, 
         }
         at.x - g.o.x - 14.0
     };
-    p.rect_filled(r(&g, M + col - 1.0, M, bar_end.max(M + col + R_IN), M + TOP), 0.0, pal.amber);
+    // The bar, with the search box's gap cut into it.
+    p.rect_filled(r(&g, M + col - 1.0, M, search.gap.0 - GAP, M + TOP), 0.0, pal.amber);
+    p.rect_filled(r(&g, search.gap.1 + GAP, M, bar_end.max(M + col + R_IN), M + TOP), 0.0, pal.amber);
     p.rect_filled(r(&g, M + col - 1.0, M + TOP - 1.0, M + col + R_IN, M + TOP + R_IN), 0.0, pal.amber);
     p.circle_filled(g.o + vec2(M + col + R_IN, M + TOP + R_IN), R_IN, pal.black);
     if sidebar {
@@ -362,6 +401,15 @@ impl StingerApp {
         }
         self.panel_counter(ui, g.o + vec2(x0, y0), room - x0);
         self.panel_meter(ui, r(&g, g.rcol_x, 98.0, w - M, 154.0));
+
+        // The search box in its gap in the top bar.
+        let slot = search_slot_in(ui.ctx(), &g, self.search_active(ui.ctx()));
+        let rect = r(&g, slot.gap.0, M, slot.gap.1, M + TOP);
+        if slot.field {
+            self.search_box(ui, rect, true, actions);
+        } else {
+            self.search_key(ui, rect, true, actions);
+        }
     }
 
     /// The focus voice's countdown, kept within `max_w`: a long title is cut short, and
@@ -679,7 +727,7 @@ impl StingerApp {
         let p = ui.painter();
         // The right-hand text runs from the middle block (or the left text) to the end cap.
         let right_from = bottom_mid(&g).filter(|mid| *mid > left.right() - g.o.x).map_or(left.right() - g.o.x, |mid| mid + 60.0) + 24.0;
-        let importing = super::import_summary(&self.ctl.store).or_else(|| self.ctl.render_summary());
+        let importing = super::import_summary(&self.ctl.store).or_else(|| self.ctl.render_summary()).or_else(|| self.ctl.transcribe_summary());
         let (right, color) = match (&self.ctl.notice, &self.ctl.engine.error, &self.ctl.engine.device_name) {
             (Some(n), _, _) if self.notice_hovered || n.at.elapsed() < Duration::from_secs(if n.error { 10 } else { 4 }) => {
                 (n.text.clone(), if n.error { pal.red } else { pal.peach })

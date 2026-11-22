@@ -86,6 +86,8 @@ cat > "$app/Contents/Info.plist" <<PLIST
   <key>NSLocalNetworkUsageDescription</key><string>$name looks for QuipClipper on your network when you ask it to find one, so you can connect without typing its address.</string>
   <key>NSBonjourServices</key><array><string>_quipclipper._tcp</string></array>
   <key>NSMicrophoneUsageDescription</key><string>$name listens to your microphone to duck music under your voice and to record clips, only when you turn those on.</string>
+  <!-- Apple Speech (src/transcribe/apple.rs): asked only from Settings, D-288. -->
+  <key>NSSpeechRecognitionUsageDescription</key><string>$name recognises the words in a sound when you ask it to transcribe, to write its subtitles and time its words. Recognition runs on this Mac; no audio is sent anywhere.</string>
 </dict>
 </plist>
 PLIST

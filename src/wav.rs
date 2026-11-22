@@ -70,24 +70,29 @@ pub fn write_pcm24(path: &Path, rate: u32, channels: u16, samples: &[i32]) -> st
 }
 
 pub fn write_mono(path: &Path, rate: u32, samples: &[f32]) -> std::io::Result<()> {
+    std::fs::write(path, mono_bytes(rate, samples))
+}
+
+/// Mono 16-bit PCM WAV, in memory: what a transcription engine is given (src/transcribe.rs).
+pub fn mono_bytes(rate: u32, samples: &[f32]) -> Vec<u8> {
     let data_len = (samples.len() * 2) as u32;
-    let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
-    f.write_all(b"RIFF")?;
-    f.write_all(&(36 + data_len).to_le_bytes())?;
-    f.write_all(b"WAVEfmt ")?;
-    f.write_all(&16u32.to_le_bytes())?; // fmt chunk size
-    f.write_all(&1u16.to_le_bytes())?; // PCM
-    f.write_all(&1u16.to_le_bytes())?; // mono
-    f.write_all(&rate.to_le_bytes())?;
-    f.write_all(&(rate * 2).to_le_bytes())?; // byte rate
-    f.write_all(&2u16.to_le_bytes())?; // block align
-    f.write_all(&16u16.to_le_bytes())?; // bits per sample
-    f.write_all(b"data")?;
-    f.write_all(&data_len.to_le_bytes())?;
+    let mut f = Vec::with_capacity(44 + samples.len() * 2);
+    f.extend_from_slice(b"RIFF");
+    f.extend_from_slice(&(36 + data_len).to_le_bytes());
+    f.extend_from_slice(b"WAVEfmt ");
+    f.extend_from_slice(&16u32.to_le_bytes()); // fmt chunk size
+    f.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    f.extend_from_slice(&1u16.to_le_bytes()); // mono
+    f.extend_from_slice(&rate.to_le_bytes());
+    f.extend_from_slice(&(rate * 2).to_le_bytes()); // byte rate
+    f.extend_from_slice(&2u16.to_le_bytes()); // block align
+    f.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+    f.extend_from_slice(b"data");
+    f.extend_from_slice(&data_len.to_le_bytes());
     for s in samples {
-        f.write_all(&((s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16).to_le_bytes())?;
+        f.extend_from_slice(&((s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16).to_le_bytes());
     }
-    f.flush()
+    f
 }
 
 /// Interleaved 16-bit PCM WAV with WAVE_FORMAT_EXTENSIBLE, one channel per bit set in

@@ -187,6 +187,7 @@ impl StingerApp {
         // Lend it the board (D-223).
         let main_set = self.ctl.store.library.selected_set;
         self.ctl.store.library.selected_set = Some(set);
+        self.ctl.lent_from = Some(main_set);
         let search = self.ctl.search.take();
         self.swap_board(&mut win.board);
         let mut actions = Vec::new();
@@ -208,6 +209,8 @@ impl StingerApp {
             self.apply(a);
         }
         self.swap_board(&mut win.board);
+        // The main window's set: as it was, or as an undo in this window left it.
+        let main_set = self.ctl.lent_from.take().unwrap_or(main_set);
         if self.ctl.search.is_none() {
             self.ctl.search = search;
         }

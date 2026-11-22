@@ -7,7 +7,7 @@ use crate::wav;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-mod synth;
+pub(crate) mod synth;
 
 use synth::Kind;
 

@@ -1122,6 +1122,14 @@ pub fn key_with(ui: &mut Ui, label: &str, size: egui::Vec2, fill: Color32, text:
 /// The smallest target a pointer should have to hit (M20): about 24 px at 100 % zoom.
 pub const TARGET: f32 = 24.0;
 
+/// A small section head in the inspector ("CHANNELS", "MESSAGES"), in the theme's dim
+/// text. Not egui's `weak()`: Panel's weak text colour is its black, so a weak head was
+/// drawn black on Panel's black and couldn't be seen.
+pub fn section_head(ui: &mut Ui, text: impl Into<String>) -> Response {
+    let dim = Tokens::get(ui.ctx()).text_dim;
+    ui.label(egui::RichText::new(text).small().strong().color(dim))
+}
+
 /// A compact button that's still a [`TARGET`] square at least.
 pub fn small(button: egui::Button<'_>) -> egui::Button<'_> {
     button.small().min_size(vec2(TARGET, TARGET))

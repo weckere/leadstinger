@@ -27,6 +27,7 @@
 	<key>UIFileSharingEnabled</key><true/>
 	<key>LSSupportsOpeningDocumentsInPlace</key><false/>
 	<key>NSMicrophoneUsageDescription</key><string>LeadStinger records sounds from the microphone when you ask it to.</string>
+	<key>NSSpeechRecognitionUsageDescription</key><string>LeadStinger recognises the words in a sound when you ask it to transcribe, to write its subtitles and time its words. Recognition runs on this iPad; no audio is sent anywhere.</string>
 	<key>NSLocalNetworkUsageDescription</key><string>LeadStinger finds QuipClipper on your network and listens for OSC control.</string>
 	<key>NSBonjourServices</key><array><string>_quipclipper._tcp</string></array>
 	<key>CFBundleDocumentTypes</key>

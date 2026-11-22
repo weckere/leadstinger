@@ -14,12 +14,13 @@ use crate::hotkeys::HotkeyStatus;
 use crate::input::Input;
 use crate::midi::MidiStatus;
 use crate::osc::{OscMessage, OscStatus};
-use crate::commands::spec;
+use crate::commands::{spec, Kind};
+use crate::policy::Policy;
 #[cfg(test)]
 use crate::commands::COMMANDS;
 use crate::logic::{
     db_to_gain, gain_to_db, next_cue, play_range, resolve_press, set_hotkey, set_hotkey_auto, PadKey,
-    tile_for_key, matches_query, next_armed, pointer_after_next, pointer_before_next, Ballistics, PlayState, TriggerAction, TriggerEvent,
+    tile_for_key, next_armed, pointer_after_next, pointer_before_next, Ballistics, PlayState, TriggerAction, TriggerEvent,
 };
 use crate::level;
 use crate::model::{zoom_step, ZOOM_MAX, ZOOM_MIN, ActionKind, CueLink, Target as ActionTarget, WAIT_MAX, TileAction, REPLAY_MAX, SPEED_MAX, SPEED_MIN, Appearance, Duck, FadeCurve, Marker, ImageFit, ImageLayer, Layout, PlayMode, PressOptions, SoundSet, ThemeKind, Tile, TileColor, GAIN_DB_MAX};
@@ -35,6 +36,8 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 mod export;
+pub mod subtitle_edit;
+pub mod transcribe;
 mod themes;
 
 /// The parameter a fader fills when it's learned for `cmd`.
@@ -121,6 +124,16 @@ pub struct Notice {
     pub at: Instant,
 }
 
+/// A tile a search found: where it is and the lines of its text that matched.
+#[derive(Clone, Debug)]
+pub struct SearchHit {
+    pub tile: Uuid,
+    /// Its set's index, and its place in the set.
+    pub set: usize,
+    pub position: usize,
+    pub matched: Vec<crate::search::Matched>,
+}
+
 /// Something a command asks the window to do.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Effect {
@@ -146,8 +159,13 @@ pub enum Effect {
     ClearClip,
     /// Playback was stopped wholesale or the set changed: forget held keys and buttons.
     ReleaseHeld,
-    /// `view.search` opened the search box: give it the keyboard.
+    /// `view.search` without parameters: give the search box the keyboard.
     FocusSearch,
+    /// `view.search {clear}`: the search box gives the keyboard back to the board.
+    LeaveSearch,
+    /// `view.search {go}` went to a tile: give its pad (or cue row) the keyboard, so
+    /// Enter plays it.
+    FocusTile(Uuid),
     /// `tile.render`/`set.render` without a path: the Export Audio window, for these
     /// tiles (none: the set).
     ExportAudio { tiles: Vec<Uuid>, set: Uuid },
@@ -166,6 +184,10 @@ pub enum Effect {
     /// `set.import` installed the set file's theme: ask whether to use it now (its id and
     /// name).
     ConfirmTheme { id: String, name: String },
+    /// `set.transcribe` with `ask`: confirm transcribing the set's tiles without
+    /// subtitles (how many, how many have subtitles from elsewhere whose gaps it could
+    /// fill, and the engine that would do it).
+    ConfirmTranscribe { set: Uuid, tiles: usize, subtitled: usize, engine: String, sends_to: Option<String> },
     /// Scroll the board to this tile (a recording started in it).
     Reveal(Uuid),
     Quit,
@@ -382,6 +404,9 @@ pub struct Controller {
     pub selection: Vec<Uuid>,
     /// The search box's text while it's open (`view.search`); the board shows its hits.
     pub search: Option<String>,
+    /// While a set window has the board on loan (D-223), the main window's own set:
+    /// `selected_set` is the window's then, and an undo step must not remember it.
+    pub lent_from: Option<Option<Uuid>>,
     pub show_settings: bool,
     /// The QuipClipper browser is open (`view.quip`).
     pub show_quip: bool,
@@ -402,6 +427,9 @@ pub struct Controller {
     pub editor_selection: Option<(f64, f64)>,
     /// A zoom `view.editorZoom` asked for, until the editor takes it.
     pub editor_zoom: Option<EditorZoom>,
+    /// The subtitle word selected in the editor's lane and what the arrows move on it
+    /// (`view.editorWord`, D-274).
+    pub editor_word: Option<subtitle_edit::EditorWord>,
     /// Output devices, as last listed.
     pub devices: Vec<String>,
     /// Input devices, as last listed: by `input.list`, or the first time something needs
@@ -443,6 +471,8 @@ pub struct Controller {
     /// What the last tick saw, to turn into events.
     seen: Seen,
     pub history: History,
+    /// A `batch.run` is under way: its steps record no undo steps of their own.
+    in_batch: bool,
     /// What the MIDI input thread last saw (`midi.ports`).
     pub midi_status: MidiStatus,
     /// `bind.learn` waiting for the next pad or key.
@@ -501,6 +531,8 @@ pub struct Controller {
     action_depth: u8,
     /// Rendered exports under way or done (`tile.render`, `set.render`), oldest first.
     pub renders: Vec<crate::render::Job>,
+    /// Tiles being transcribed and waiting to be (src/controller/transcribe.rs).
+    pub transcriber: transcribe::Transcriber,
     next_render: u32,
     /// The theme in use (D-105, D-106): a built-in or one from the data folder's themes.
     /// The window restyles from it on [`Effect::ApplyLook`].
@@ -621,6 +653,71 @@ const LEARN_FOR: Duration = Duration::from_secs(30);
 
 /// How many undo steps are kept.
 const UNDO_LIMIT: usize = 50;
+/// The most steps one `batch.run` takes.
+const BATCH_LIMIT: usize = 2000;
+/// A batch's undo step.
+const BATCH_UNDO: &str = "Script";
+/// Undoable commands a dry run still refuses: they reach outside the library (record,
+/// copy or download media, read the clipboard), which putting the sets back can't undo.
+const DRY_RUN_REFUSES: &[&str] = &[
+    "record.start", "record.stop", "record.toggle", "replay.save", "set.import", "tile.add", "tile.paste",
+    "tile.replaceAudio", "tile.picture", "quip.import", "quip.add",
+];
+
+/// What a batch changed in the sets: sets and tiles added, removed and changed (by the
+/// fields that differ; a set's `tiles` field means they moved, came or went).
+fn library_changes(before: &[SoundSet], after: &[SoundSet]) -> Value {
+    use std::collections::BTreeMap;
+    fn fields(a: &Value, b: &Value) -> Vec<String> {
+        let (Some(a), Some(b)) = (a.as_object(), b.as_object()) else { return vec![] };
+        let mut keys: Vec<&String> = a.keys().chain(b.keys()).collect();
+        keys.sort();
+        keys.dedup();
+        keys.into_iter().filter(|k| a.get(*k) != b.get(*k)).cloned().collect()
+    }
+    let sets = |sets: &[SoundSet]| -> BTreeMap<Uuid, (String, Value)> {
+        sets.iter()
+            .map(|s| {
+                let mut v = serde_json::to_value(s).unwrap_or(Value::Null);
+                if let Some(o) = v.as_object_mut() {
+                    let order: Vec<Uuid> = s.tiles.iter().map(|t| t.id).collect();
+                    o.insert("tiles".into(), json!(order));
+                }
+                (s.id, (s.name.clone(), v))
+            })
+            .collect()
+    };
+    let tiles = |sets: &[SoundSet]| -> BTreeMap<Uuid, (String, String, Value)> {
+        sets.iter()
+            .flat_map(|s| s.tiles.iter().map(move |t| (t.id, (t.title.clone(), s.name.clone(), serde_json::to_value(t).unwrap_or(Value::Null)))))
+            .collect()
+    };
+    let (sb, sa) = (sets(before), sets(after));
+    let (tb, ta) = (tiles(before), tiles(after));
+    json!({
+        "sets": {
+            "added": sa.iter().filter(|(id, _)| !sb.contains_key(id)).map(|(id, (name, _))| json!({"set": id, "name": name})).collect::<Vec<_>>(),
+            "removed": sb.iter().filter(|(id, _)| !sa.contains_key(id)).map(|(id, (name, _))| json!({"set": id, "name": name})).collect::<Vec<_>>(),
+            "changed": sa.iter().filter_map(|(id, (name, v))| {
+                let (_, old) = sb.get(id)?;
+                let f = fields(old, v);
+                (!f.is_empty()).then(|| json!({"set": id, "name": name, "fields": f}))
+            }).collect::<Vec<_>>(),
+        },
+        "tiles": {
+            "added": ta.iter().filter(|(id, _)| !tb.contains_key(id)).map(|(id, (title, set, _))| json!({"tile": id, "title": title, "set": set})).collect::<Vec<_>>(),
+            "removed": tb.iter().filter(|(id, _)| !ta.contains_key(id)).map(|(id, (title, set, _))| json!({"tile": id, "title": title, "set": set})).collect::<Vec<_>>(),
+            "changed": ta.iter().filter_map(|(id, (title, set, v))| {
+                let (_, old_set, old) = tb.get(id)?;
+                let mut f = fields(old, v);
+                if old_set != set {
+                    f.push("set".into());
+                }
+                (!f.is_empty()).then(|| json!({"tile": id, "title": title, "set": set, "fields": f}))
+            }).collect::<Vec<_>>(),
+        },
+    })
+}
 /// Repeated `tile.set`s on one tile closer together than this are one undo step (a
 /// slider drag, typing a title).
 const COALESCE: Duration = Duration::from_millis(1500);
@@ -743,6 +840,7 @@ impl Controller {
             updates: Default::default(),
             editor: None,
             editor_selection: None,
+            editor_word: None,
             editor_zoom: None,
             devices: Vec::new(),
             notice,
@@ -758,6 +856,8 @@ impl Controller {
             subscribers: Vec::new(),
             seen: Seen::default(),
             history: History::default(),
+            in_batch: false,
+            lent_from: None,
             midi_status: MidiStatus::default(),
             learning: None,
             osc_status: OscStatus::default(),
@@ -793,6 +893,7 @@ impl Controller {
             stop_all_fading: None,
             action_depth: 0,
             renders: Vec::new(),
+            transcriber: transcribe::Transcriber::default(),
             next_render: 1,
             look: std::sync::Arc::new(crate::theme::Look::console()),
             look_warnings: Vec::new(),
@@ -1822,6 +1923,7 @@ impl Controller {
         self.engine.tick_without_device(dt);
         self.store.poll();
         self.poll_renders();
+        self.poll_transcription();
         self.poll_theme();
         crate::quip::clips::poll(self);
         crate::quip::watch::poll(self);
@@ -2049,6 +2151,7 @@ impl Controller {
         self.editor = None;
         self.editor_selection = None;
         self.editor_zoom = None;
+        self.editor_word = None;
     }
 
     /// The tile open in the editor and its length in seconds, for the editor's commands.
@@ -2189,7 +2292,7 @@ impl Controller {
     /// the list); selecting a row of the set makes it the next cue.
     fn sync_list_selection(&mut self) {
         let set = self.current_set();
-        if set.layout != Layout::List || self.search.is_some() {
+        if set.layout != Layout::List {
             self.list_sync = None;
             return;
         }
@@ -2671,6 +2774,7 @@ impl Controller {
             "trim_end": t.end,
             "vamp": t.vamp.map(|(a, b)| json!([a, b])),
             "markers": t.markers.iter().map(|m| json!({"name": m.name, "at": m.at})).collect::<Vec<_>>(),
+            "subtitles": t.subtitles.len(),
             "duration": t.duration,
             "audio": media,
             "import_progress": importing.and_then(|i| i.fraction()),
@@ -2749,14 +2853,131 @@ impl Controller {
 
     /// Run one command. `params` is a JSON object (or null for none).
     pub fn execute(&mut self, id: &str, params: Value) -> Res {
-        let result = self.execute_step(id, params);
+        self.execute_with(id, params, &Policy::open())
+    }
+
+    /// Run one command for a caller with a policy (a control socket connection): the
+    /// policy is checked again for each step of a `batch.run`.
+    pub fn execute_with(&mut self, id: &str, params: Value, policy: &Policy) -> Res {
+        let result = if id == "batch.run" { self.batch(&params, policy) } else { self.execute_step(id, params) };
         self.sync_list_selection();
         result
     }
 
+    /// `batch.run`: the steps one after another, with nothing else acting in between (the
+    /// caller holds the Controller throughout), as one undo step. Atomic or a dry run, the
+    /// sets go back as they were when it fails or ends; as with undo, settings, the view
+    /// and playback aren't put back.
+    fn batch(&mut self, params: &Value, policy: &Policy) -> Res {
+        let bad = |m: String| CmdError::new("bad_params", format!("batch.run: {m}"));
+        let Some(steps) = params.get("steps").and_then(Value::as_array) else {
+            return Err(bad("steps must be a list of {command, params}".into()));
+        };
+        if steps.len() > BATCH_LIMIT {
+            return Err(bad(format!("at most {BATCH_LIMIT} steps (got {})", steps.len())));
+        }
+        let flag = |k: &str, default: bool| match params.get(k) {
+            None | Some(Value::Null) => Ok(default),
+            Some(Value::Bool(b)) => Ok(*b),
+            Some(_) => Err(bad(format!("{k} must be true or false"))),
+        };
+        let atomic = flag("atomic", true)?;
+        let dry = flag("dryRun", false)?;
+        // Check every step before running any.
+        let mut parsed = Vec::with_capacity(steps.len());
+        for (n, step) in steps.iter().enumerate() {
+            let n = n + 1;
+            let Some(id) = step.get("command").and_then(Value::as_str) else {
+                return Err(bad(format!("step {n}: no \"command\"")));
+            };
+            let Some(sp) = spec(id) else {
+                return Err(CmdError::new("unknown_command", format!("batch.run: step {n}: no command {id:?}")));
+            };
+            if matches!(sp.id, "batch.run" | "edit.undo" | "edit.redo") {
+                return Err(bad(format!("step {n}: {} can't run inside a batch", sp.id)));
+            }
+            let step_params = step.get("params").cloned().unwrap_or_else(|| json!({}));
+            policy.check(sp, &step_params).map_err(|e| CmdError { message: format!("batch.run: step {n}: {}", e.message), ..e })?;
+            if dry && sp.kind != Kind::Query && (!sp.undo || sp.kind == Kind::Live || DRY_RUN_REFUSES.contains(&sp.id)) {
+                return Err(bad(format!("step {n}: a dry run can't take {} back, so it doesn't run it", sp.id)));
+            }
+            parsed.push((sp, step_params));
+        }
+
+        let before = self.store.library.sets.clone();
+        let selected = self.main_window_set();
+        let effects = self.effects.len();
+        let mut keep = self.history.media();
+        keep.extend(self.store.library.media_files());
+        self.store.hold_media(keep);
+        self.in_batch = true;
+        let mut results = Vec::with_capacity(parsed.len());
+        let mut failed = None;
+        for (n, (sp, step_params)) in parsed.into_iter().enumerate() {
+            match self.run(sp.id, step_params) {
+                Ok(v) => results.push(json!({"step": n + 1, "command": sp.id, "ok": true, "result": v})),
+                Err(e) => {
+                    results.push(json!({"step": n + 1, "command": sp.id, "ok": false, "error": crate::control::error_json(&e)}));
+                    failed.get_or_insert(n + 1);
+                    if atomic || dry {
+                        break;
+                    }
+                }
+            }
+        }
+        self.in_batch = false;
+
+        let changes = library_changes(&before, &self.store.library.sets);
+        let changed = self.store.library.sets != before;
+        let roll_back = dry || (atomic && failed.is_some());
+        let mut undo = None;
+        if roll_back {
+            if changed {
+                self.store.restore_sets(before, selected);
+                self.settle_restored();
+            }
+            if dry {
+                self.effects.truncate(effects); // no file pickers or renames for a rehearsal
+            }
+        } else if changed {
+            let h = &mut self.history;
+            h.undo.push(Step { label: BATCH_UNDO, sets: before, selected });
+            if h.undo.len() > UNDO_LIMIT {
+                h.undo.remove(0);
+            }
+            h.last = None;
+            h.redo.clear();
+            undo = Some(BATCH_UNDO);
+        }
+        let held = self.history.media();
+        self.store.hold_media(held);
+        Ok(json!({
+            "ok": failed.is_none(),
+            "steps": results,
+            "failed": failed,
+            "rolledBack": roll_back && changed,
+            "dryRun": dry,
+            "undo": undo,
+            "changes": changes,
+        }))
+    }
+
+    /// After sets were put back (undo, redo, a batch rolled back): tiles that are gone stop
+    /// and leave the inspector.
+    fn settle_restored(&mut self) {
+        for id in self.engine.statuses().into_keys() {
+            if self.store.library.tile(id).is_none() {
+                self.engine.stop(id, 0.1);
+            }
+        }
+        if self.selected_tile.is_some_and(|id| self.store.library.tile(id).is_none()) {
+            self.selected_tile = None;
+        }
+    }
+
     /// A command as one undo step (when it's one that changes the library).
     fn execute_step(&mut self, id: &str, params: Value) -> Res {
-        let Some(sp) = spec(id).filter(|s| s.undo) else { return self.run(id, params) };
+        let Some(sp) = spec(id).filter(|s| s.undo && !self.in_batch) else { return self.run(id, params) };
         // One drag or one typed title is one step; anything else starts a new one.
         let target = match id {
             "tile.set" | "tile.action" => Some(format!("{id}:{}", params.get("tile").or(params.get("tiles")).unwrap_or(&Value::Null))),
@@ -2765,7 +2986,7 @@ impl Controller {
             _ => None,
         };
         let sets = self.store.library.sets.clone();
-        let selected = self.store.library.selected_set;
+        let selected = self.main_window_set();
         // Hold today's clips too, so a removal can't delete what this step will refer to.
         let mut keep = self.history.media();
         keep.extend(self.store.library.media_files());
@@ -3361,29 +3582,38 @@ impl Controller {
 
     /// `edit.undo` / `edit.redo`: put back the sets from the top of one stack, saving the
     /// current ones on the other.
+    /// The main window's set: the one undo steps remember, even while a set window has
+    /// the board on loan.
+    fn main_window_set(&self) -> Option<Uuid> {
+        self.lent_from.unwrap_or(self.store.library.selected_set)
+    }
+
     fn step_history(&mut self, redo: bool) -> Res {
+        let main_set = self.main_window_set();
         let h = &mut self.history;
         let (from, to) = if redo { (&mut h.redo, &mut h.undo) } else { (&mut h.undo, &mut h.redo) };
         let Some(step) = from.pop() else {
             return Err(CmdError::new("nothing_to_undo", if redo { "Nothing to redo" } else { "Nothing to undo" }));
         };
-        to.push(Step { label: step.label, sets: self.store.library.sets.clone(), selected: self.store.library.selected_set });
+        to.push(Step { label: step.label, sets: self.store.library.sets.clone(), selected: main_set });
         h.last = None;
         // Hold today's clips (now in the step just pushed) and the restored step's own
         // before the restore lets go of anything.
         let mut held = self.history.media();
         held.extend(step.sets.iter().flat_map(|s| &s.tiles).flat_map(|t| t.file.iter().chain(&t.image).cloned()));
         self.store.hold_media(held);
+        let window_set = self.lent_from.map(|_| self.store.library.selected_set);
         self.store.restore_sets(step.sets, step.selected);
-        // Tiles the step takes away stop, and leave the inspector.
-        for id in self.engine.statuses().into_keys() {
-            if self.store.library.tile(id).is_none() {
-                self.engine.stop(id, 0.1);
+        // From a set window: the step's set is the main window's again, and the window
+        // keeps its own while it still exists (D-223).
+        if let Some(window_set) = window_set {
+            self.lent_from = Some(self.store.library.selected_set);
+            if window_set.is_some_and(|id| self.store.library.sets.iter().any(|s| s.id == id)) {
+                self.store.library.selected_set = window_set;
             }
         }
-        if self.selected_tile.is_some_and(|id| self.store.library.tile(id).is_none()) {
-            self.selected_tile = None;
-        }
+        // Tiles the step takes away stop, and leave the inspector.
+        self.settle_restored();
         let held = self.history.media();
         self.store.hold_media(held);
         let verb = if redo { "Redid" } else { "Undid" };
@@ -3475,6 +3705,64 @@ impl Controller {
                 }
                 self.store.mark_dirty();
                 Ok(self.tile_json(id))
+            }
+            "tile.subtitles" => {
+                let id = self.tile_param(&p)?;
+                let t = self.store.library.tile(id).expect("resolved");
+                let end = t.end.or(t.duration).unwrap_or(f64::INFINITY);
+                Ok(json!({
+                    "tile": id, "title": t.title, "cues": crate::subtitles::to_value(&t.subtitles), "cues_source": t.subtitles_source,
+                    "heard": crate::subtitles::heard(&t.subtitles, t.start, end).count(), "trim_start": t.start, "trim_end": t.end,
+                }))
+            }
+            "tile.subtitlesSet" => {
+                let id = self.tile_param(&p)?;
+                let cues = p.get("cues").ok_or_else(|| bad("tile.subtitlesSet: give cues, a list of {start, end, text}"))?;
+                // Text from the CLI: a JSON list in a string.
+                let parsed_cues;
+                let cues = match cues {
+                    Value::String(s) => {
+                        parsed_cues = serde_json::from_str::<Value>(s).map_err(|e| bad(format!("tile.subtitlesSet: cues isn't JSON: {e}")))?;
+                        &parsed_cues
+                    }
+                    v => v,
+                };
+                if !cues.is_array() {
+                    return Err(bad("tile.subtitlesSet: cues must be a list of {start, end, text}"));
+                }
+                let parsed = crate::subtitles::parse_lines(cues);
+                if parsed.lines.is_empty() {
+                    return Err(bad(if parsed.dropped_lines == 0 { "tile.subtitlesSet: cues is empty (tile.subtitlesClear removes them)".to_owned() } else { format!("tile.subtitlesSet: none of the {} lines could be read: each needs start < end (seconds) and text", parsed.dropped_lines) }));
+                }
+                let source = match p.get("cues_source") {
+                    None | Some(Value::Null) => None,
+                    Some(v) => Some(crate::subtitles::parse_source(v).ok_or_else(|| bad("tile.subtitlesSet: cues_source must be an object with a kind"))?),
+                };
+                let keep = p.bool("keepAligned")?.unwrap_or(true);
+                let t = self.store.library.tile_mut(id).expect("resolved");
+                let (lines, kept) = if keep { crate::subtitles::merge(&t.subtitles, parsed.lines) } else { (parsed.lines, 0) };
+                t.subtitles = lines;
+                if source.is_some() || !keep {
+                    t.subtitles_source = source;
+                }
+                let n = t.subtitles.len();
+                self.store.mark_dirty();
+                Ok(json!({"tile": id, "lines": n, "skipped": parsed.dropped_lines, "skipped_words": parsed.dropped_words, "kept_aligned": kept}))
+            }
+            "view.editorWord" => self.editor_word_command(&p),
+            "tile.subtitleNudge" | "tile.subtitleEdge" | "tile.subtitleWordMove" | "tile.subtitleTap" | "tile.subtitleLineMove" | "tile.subtitleAutoAlign" | "tile.subtitleReset"
+            | "tile.subtitleWordText" | "tile.subtitleWordJoin" | "tile.subtitleText" => self.subtitle_edit(id, &p),
+            "tile.subtitleAdd" => self.subtitle_add(&p),
+            "tile.subtitleDelete" => self.subtitle_delete(&p),
+            "tile.subtitlesClear" => {
+                let id = self.tile_param(&p)?;
+                let t = self.store.library.tile_mut(id).expect("resolved");
+                let removed = t.subtitles.len();
+                t.clear_subtitles();
+                if removed > 0 {
+                    self.store.mark_dirty();
+                }
+                Ok(json!({"tile": id, "removed": removed}))
             }
             "tile.markerRemove" => {
                 let id = self.tile_param(&p)?;
@@ -4094,8 +4382,9 @@ impl Controller {
                     }
                 }
             }
+            "tile.search" => self.tile_search(&p),
             "tile.list" => {
-                let query = p.str("query")?.map(str::to_lowercase);
+                let query = p.str("query")?.map(crate::search::Query::new);
                 let sets: Vec<usize> = match p.str("set")? {
                     Some("*") => (0..self.store.library.sets.len()).collect(),
                     r => vec![self.resolve_set(r)?],
@@ -4103,7 +4392,7 @@ impl Controller {
                 let ids: Vec<Uuid> = sets
                     .iter()
                     .flat_map(|&si| self.store.library.sets[si].tiles.iter())
-                    .filter(|t| query.as_ref().is_none_or(|q| matches_query(t, q)))
+                    .filter(|t| query.as_ref().is_none_or(|q| q.matches(t)))
                     .map(|t| t.id)
                     .collect();
                 Ok(json!(ids.iter().map(|&id| self.tile_json(id)).collect::<Vec<_>>()))
@@ -4161,6 +4450,7 @@ impl Controller {
             }
             "tile.normalize" => self.tile_normalize(&p),
             "tile.render" | "set.render" | "render.status" | "render.cancel" => self.render_command(id, &p),
+            "tile.transcribe" | "set.transcribe" | "tile.alignWords" | "transcribe.status" | "transcribe.cancel" | "transcribe.engines" | "transcribe.allowSpeech" | "settings.transcribe" => self.transcribe_command(id, &p),
             "theme.list" | "theme.use" | "theme.import" | "theme.export" | "theme.remove" => self.theme_command(id, &p),
             "tile.addAction" | "tile.action" => self.action_commands(id, &p),
             "tile.enable" | "tile.disable" => {
@@ -4399,6 +4689,8 @@ impl Controller {
                 self.show_settings = p.bool("open")?.unwrap_or(true);
                 if self.show_settings {
                     self.devices = Engine::output_devices();
+                    // Whether each QuipClipper transcribes is asked again (in the background).
+                    crate::quip::transcribe::refresh(&self.store.data_dir);
                 }
                 ok()
             }
@@ -4648,49 +4940,105 @@ impl Controller {
         Ok(json!({"tile": pick, "title": tile.title, "left": left}))
     }
 
-    /// The tiles matching a search, the current set's first, then the other sets in
-    /// sidebar order. Nothing for an empty query.
-    pub fn search_hits(&self, query: &str) -> Vec<Uuid> {
-        let q = query.trim().to_lowercase();
+    /// What a search finds: the current set's tiles first, then the other sets' in
+    /// sidebar order (or only `set`'s), each with the lines that matched. Nothing for
+    /// an empty query.
+    pub fn search_results(&self, query: &str, set: Option<usize>) -> Vec<SearchHit> {
+        let q = crate::search::Query::new(query);
         if q.is_empty() {
             return Vec::new();
         }
         let cur = self.set_idx();
         let sets = &self.store.library.sets;
-        std::iter::once(cur)
-            .chain((0..sets.len()).filter(|&i| i != cur))
-            .flat_map(|si| sets[si].tiles.iter())
-            .filter(|t| matches_query(t, &q))
-            .map(|t| t.id)
+        let order: Vec<usize> = match set {
+            Some(si) => vec![si],
+            None => std::iter::once(cur).chain((0..sets.len()).filter(|&i| i != cur)).collect(),
+        };
+        order
+            .into_iter()
+            .flat_map(|si| sets[si].tiles.iter().enumerate().map(move |(ti, t)| (si, ti, t)))
+            .filter_map(|(set, position, t)| q.find(t).map(|matched| SearchHit { tile: t.id, set, position, matched }))
             .collect()
     }
 
-    /// `view.search`: open, change or close the search box, or play its top hit.
+    /// The tiles a search finds, in the results' order.
+    pub fn search_hits(&self, query: &str) -> Vec<Uuid> {
+        self.search_results(query, None).into_iter().map(|h| h.tile).collect()
+    }
+
+    /// A search hit as `view.search` and `tile.search` report it.
+    fn hit_json(&self, h: &SearchHit) -> Value {
+        let set = &self.store.library.sets[h.set];
+        json!({"tile": h.tile, "title": set.tiles[h.position].title, "set": set.name, "position": h.position + 1, "matched": h.matched})
+    }
+
+    /// `view.search`: the search box at the top of the window. Focus it, set or clear
+    /// its text, go to one of its hits or play one.
     fn view_search(&mut self, p: &P) -> Res {
-        if p.bool("close")? == Some(true) {
+        let clear = p.bool("clear")? == Some(true) || p.bool("close")? == Some(true);
+        let (go, play) = (p.bool("go")? == Some(true), p.bool("play")? == Some(true));
+        if clear {
             self.search = None;
+            self.effects.push(Effect::LeaveSearch);
         } else if let Some(q) = p.str("query")? {
-            self.search = Some(q.to_owned());
-        } else if self.search.is_none() || !p.has("play") {
-            self.search.get_or_insert_default();
+            self.search = Some(q.to_owned()).filter(|q| !q.trim().is_empty());
+        } else if !go && !play {
             self.effects.push(Effect::FocusSearch);
         }
-        let hits = self.search.as_deref().map(|q| self.search_hits(q)).unwrap_or_default();
-        if p.bool("play")? == Some(true) {
-            // The first hit that can play: disabled tiles and empty ones are passed over.
-            let lib = &self.store.library;
-            let Some(&top) = hits.iter().find(|id| lib.tile(**id).is_some_and(crate::logic::is_cue)) else {
-                return Err(CmdError::new("not_found", "No playable tile matches the search"));
-            };
-            self.execute("tile.play", json!({"tile": top}))?;
-            self.search = None;
-        }
-        let lib = &self.store.library;
-        let hit = |id: &Uuid| {
-            let (si, ti) = lib.locate(*id).expect("a hit");
-            json!({"tile": id, "title": lib.sets[si].tiles[ti].title, "set": lib.sets[si].name})
+        let hits = self.search.as_deref().map(|q| self.search_results(q, None)).unwrap_or_default();
+        let index = p.f64("index")?.map(|n| (n.max(1.0) as usize) - 1);
+        let pick = |what: &str| -> Result<&SearchHit, CmdError> {
+            match index {
+                Some(i) => hits.get(i).ok_or_else(|| CmdError::new("not_found", format!("The search has no hit #{}", i + 1))),
+                None => hits.first().ok_or_else(|| CmdError::new("not_found", format!("Nothing matches the search to {what}"))),
+            }
         };
-        Ok(json!({"open": self.search.is_some(), "query": self.search, "hits": hits.iter().map(hit).collect::<Vec<_>>()}))
+        let mut done = json!({});
+        if go {
+            // Its set in the main window, the tile selected and in view, its pad focused;
+            // the search has done its job, so the box empties.
+            let h = pick("go to")?;
+            let (tile, set) = (h.tile, self.store.library.sets[h.set].id);
+            if self.set_idx() != h.set {
+                self.execute("set.select", json!({"set": set}))?;
+            }
+            self.execute("view.select", json!({"tile": tile}))?;
+            self.effects.push(Effect::Reveal(tile));
+            self.effects.push(Effect::FocusTile(tile));
+            self.search = None;
+            done = json!({"went": tile});
+        } else if play {
+            // The hit asked for, or the first that can play (disabled and empty tiles are
+            // passed over). The search stays, so another can be played.
+            let lib = &self.store.library;
+            let tile = match index {
+                Some(_) => pick("play")?.tile,
+                None => hits
+                    .iter()
+                    .find(|h| crate::logic::is_cue(&lib.sets[h.set].tiles[h.position]))
+                    .map(|h| h.tile)
+                    .ok_or_else(|| CmdError::new("not_found", "No playable tile matches the search"))?,
+            };
+            self.execute("tile.play", json!({"tile": tile}))?;
+            done = json!({"played": tile});
+        }
+        let hits = self.search.as_deref().map(|q| self.search_results(q, None)).unwrap_or_default();
+        let mut out = json!({"open": self.search.is_some(), "query": self.search, "hits": hits.iter().map(|h| self.hit_json(h)).collect::<Vec<_>>()});
+        if let (Some(o), Value::Object(d)) = (out.as_object_mut(), done) {
+            o.extend(d);
+        }
+        Ok(out)
+    }
+
+    /// `tile.search`: find tiles by title, file name, notes and subtitles, in every set or
+    /// one. Changes nothing, works without the app.
+    fn tile_search(&self, p: &P) -> Res {
+        let query = p.need_str("query")?;
+        let set = match p.str("set")? {
+            None | Some("*") => None,
+            r => Some(self.resolve_set(r)?),
+        };
+        Ok(json!(self.search_results(query, set).iter().map(|h| self.hit_json(h)).collect::<Vec<_>>()))
     }
 
     /// `tile.normalize`: set the gain of one tile, or of every tile in a set, so its
@@ -5195,6 +5543,50 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let store = Store::open(root.join("data")).unwrap();
         (Controller::new(store, Engine::disabled("test")), root)
+    }
+
+    /// A set window lends itself the board by making its set current (D-223). An undo
+    /// step recorded there remembers the main window's set, so undoing it later (from
+    /// either window) leaves the main window on its own set.
+    #[test]
+    fn undo_from_a_set_window_keeps_the_main_windows_set() {
+        let (mut c, _root) = controller();
+        c.execute("set.create", json!({"name": "Main"})).unwrap();
+        c.execute("set.create", json!({"name": "Cues"})).unwrap();
+        let id = |c: &Controller, name: &str| c.store.library.sets.iter().find(|s| s.name == name).unwrap().id;
+        let (main, cues) = (id(&c, "Main"), id(&c, "Cues"));
+        c.store.library.selected_set = Some(main);
+        // The window's frame, as windows.rs does it: lend, act, give back.
+        let lend = |c: &mut Controller, f: &mut dyn FnMut(&mut Controller)| {
+            let main_set = c.store.library.selected_set;
+            c.store.library.selected_set = Some(cues);
+            c.lent_from = Some(main_set);
+            f(c);
+            let main_set = c.lent_from.take().unwrap_or(main_set);
+            if c.store.library.selected_set == Some(cues) {
+                c.store.library.selected_set = main_set;
+            }
+        };
+        lend(&mut c, &mut |c| {
+            c.execute("set.notes", json!({"notes": "from the window"})).unwrap();
+        });
+        assert_eq!(c.store.library.selected_set, Some(main));
+        assert_eq!(c.store.library.sets.iter().find(|s| s.id == cues).unwrap().notes, "from the window");
+        // Undone in the main window: the note goes, the main window stays on Main.
+        c.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(c.store.library.selected_set, Some(main));
+        assert_eq!(c.store.library.sets.iter().find(|s| s.id == cues).unwrap().notes, "");
+        // Redone and undone again from the set window: the main window still keeps Main.
+        lend(&mut c, &mut |c| {
+            c.execute("edit.redo", json!({})).unwrap();
+            assert_eq!(c.store.library.selected_set, Some(cues), "the window keeps its set while it draws");
+        });
+        assert_eq!(c.store.library.selected_set, Some(main));
+        lend(&mut c, &mut |c| {
+            c.execute("edit.undo", json!({})).unwrap();
+        });
+        assert_eq!(c.store.library.selected_set, Some(main));
+        assert_eq!(c.store.library.sets.iter().find(|s| s.id == cues).unwrap().notes, "");
     }
 
     /// `window.*` (D-224): the library keeps which sets are open in windows and where;
@@ -5890,30 +6282,71 @@ mod tests {
         add(&mut c, &root, &["Applause", "Rimshot"]);
         c.execute("set.create", json!({"name": "Act 2"})).unwrap();
         let other = add(&mut c, &root, &["Big Applause", "Door"]);
-        c.execute("tile.set", json!({"tile": "Door", "notes": "applause on the slam"})).unwrap();
+        c.execute("tile.set", json!({"tile": "Door", "notes": "first knock\napplause on the slam"})).unwrap();
         c.execute("set.select", json!({"set": "#1"})).unwrap();
-        // Opening asks the window for the keyboard; typing filters every set, the
-        // current one first, by title or notes.
+        // Without parameters it asks the window to put the keyboard in the box; words
+        // find tiles in every set, the current one first, by title or notes.
         c.execute("view.search", json!({})).unwrap();
         assert_eq!(c.effects.last(), Some(&Effect::FocusSearch));
         let r = c.execute("view.search", json!({"query": "APPLAUSE"})).unwrap();
         let titles: Vec<&str> = r["hits"].as_array().unwrap().iter().map(|h| h["title"].as_str().unwrap()).collect();
         assert_eq!(titles, ["Applause", "Big Applause", "Door"]);
+        assert_eq!(r["hits"][2]["matched"], json!([{"field": "notes", "text": "applause on the slam"}]), "the line that matched");
+        assert_eq!(r["hits"][1]["set"], "Act 2");
         assert_eq!(c.execute("tile.list", json!({"set": "*", "query": "slam"})).unwrap()[0]["title"], "Door", "tile.list matches the same way");
-        // Enter plays the top hit and closes the box.
-        c.execute("set.select", json!({"set": "Act 2"})).unwrap();
-        c.execute("view.search", json!({"query": "applause"})).unwrap();
-        let r = c.execute("view.search", json!({"play": true})).unwrap();
-        assert_eq!(r["open"], false);
-        assert_eq!(c.engine.state(other[0]), PlayState::Playing, "the current set's hit comes first");
+        // Play: the first that can play, and the box keeps its words.
         c.execute("tile.disable", json!({"tile": "Applause"})).unwrap();
-        c.execute("set.select", json!({"set": "#1"})).unwrap();
-        c.execute("view.search", json!({"query": "applause"})).unwrap();
-        c.execute("view.search", json!({"play": true})).unwrap();
-        assert_eq!(c.engine.state(c.resolve_tile("Applause").unwrap()), PlayState::Stopped, "a disabled hit is passed over");
+        let r = c.execute("view.search", json!({"play": true})).unwrap();
+        assert_eq!(r["played"], json!(other[0]), "a disabled hit is passed over");
+        assert_eq!(r["open"], true, "playing keeps the search");
+        assert_eq!(c.engine.state(other[0]), PlayState::Playing);
+        assert_eq!(c.engine.state(c.resolve_tile("Applause").unwrap()), PlayState::Stopped);
+        // Go: hit #3 is in Act 2; its set comes up, it's selected and its pad focused,
+        // the box empties. Nothing stops.
+        let r = c.execute("view.search", json!({"go": true, "index": 3})).unwrap();
+        assert_eq!(r["went"], json!(other[1]));
+        assert_eq!((c.current_set().name.as_str(), c.selected_tile), ("Act 2", Some(other[1])));
+        assert!(c.search.is_none() && c.effects.contains(&Effect::FocusTile(other[1])));
+        assert_eq!(c.engine.state(other[0]), PlayState::Playing, "going to a tile doesn't stop what plays");
         c.execute("view.search", json!({"query": "zzz"})).unwrap();
         assert_eq!(c.execute("view.search", json!({"play": true})).unwrap_err().code, "not_found");
+        assert_eq!(c.execute("view.search", json!({"go": true})).unwrap_err().code, "not_found");
+        c.execute("view.search", json!({"query": "door"})).unwrap();
+        assert_eq!(c.execute("view.search", json!({"go": true, "index": 2})).unwrap_err().code, "not_found");
+        c.execute("view.search", json!({"clear": true})).unwrap();
+        assert!(c.search.is_none());
+        assert_eq!(c.effects.last(), Some(&Effect::LeaveSearch), "clearing gives the keyboard back to the board");
+        c.execute("view.search", json!({"query": "door"})).unwrap();
         c.execute("view.search", json!({"close": true})).unwrap();
+        assert!(c.search.is_none(), "close is the old name for clear");
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn tile_search_finds_by_every_word_file_name_and_accents() {
+        let (mut c, root) = controller();
+        add(&mut c, &root, &["crowd_cheer_02", "Rimshot"]);
+        c.execute("tile.set", json!({"tile": "crowd_cheer_02", "title": "Café Applause"})).unwrap();
+        c.execute("set.create", json!({"name": "Act 2"})).unwrap();
+        add(&mut c, &root, &["Cafe Door"]);
+        c.execute("set.select", json!({"set": "#1"})).unwrap();
+        let search = |c: &mut Controller, p: Value| c.execute("tile.search", p).unwrap();
+        // Several words, any order, any field; accents and case ignored.
+        let r = search(&mut c, json!({"query": "CHEER cafe"}));
+        assert_eq!(r.as_array().unwrap().len(), 1);
+        assert_eq!(r[0]["title"], "Café Applause");
+        assert_eq!(r[0]["position"], 1);
+        assert_eq!(r[0]["matched"], json!([{"field": "title", "text": "Café Applause"}, {"field": "file", "text": "crowd_cheer_02"}]));
+        // Every set by default, the current one first; or one set.
+        let first = c.store.library.sets[0].name.clone();
+        let r = search(&mut c, json!({"query": "café"}));
+        assert_eq!(r.as_array().unwrap().iter().map(|h| h["set"].as_str().unwrap()).collect::<Vec<_>>(), [first.as_str(), "Act 2"]);
+        let r = search(&mut c, json!({"query": "cafe", "set": "Act 2"}));
+        assert_eq!(r[0]["title"], "Cafe Door");
+        assert_eq!(r.as_array().unwrap().len(), 1);
+        assert_eq!(search(&mut c, json!({"query": "cafe rimshot"})), json!([]), "every word must match one tile");
+        assert_eq!(c.execute("tile.search", json!({})).unwrap_err().code, "bad_params");
+        // It reads only: the box and the selection are untouched.
         assert!(c.search.is_none());
         std::fs::remove_dir_all(root).ok();
     }
@@ -6184,6 +6617,72 @@ mod tests {
         assert_eq!(c.execute("tile.set", json!({"tile": "Dog", "emoji": ""})).unwrap()["emoji"], "");
         c.execute("tile.set", json!({"tile": "Dog", "emoji": "🐶"})).unwrap();
         assert_eq!(c.execute("tile.set", json!({"tile": "Dog", "emoji": null})).unwrap()["emoji"], "", "null clears it too");
+    }
+
+    /// tile.subtitles / subtitlesSet / subtitlesClear (D-260): JSON in and out, undo,
+    /// hand alignment kept on a new copy (D-261), copies carry them and Replace Audio
+    /// drops them (D-262).
+    #[test]
+    fn subtitles_are_read_set_cleared_and_follow_the_audio() {
+        let (mut c, root) = controller();
+        let ids = add(&mut c, &root, &["Line", "Other"]);
+        let empty = c.execute("tile.subtitles", json!({"tile": "Line"})).unwrap();
+        assert_eq!((&empty["cues"], &empty["cues_source"], &empty["heard"]), (&json!([]), &Value::Null, &json!(0)));
+        let cues = json!([{"start": 0.3, "end": 0.45, "text": "Later"}, {"start": 0.0, "end": 0.2, "text": "Hello there"}, {"start": 1, "end": 0, "text": "bad"}]);
+        let r = c.execute("tile.subtitlesSet", json!({"tile": "Line", "cues": cues, "cues_source": {"kind": "srt", "lang": "en"}})).unwrap();
+        assert_eq!((&r["lines"], &r["skipped"], &r["kept_aligned"]), (&json!(2), &json!(1), &json!(0)));
+        c.execute("tile.set", json!({"tile": "Line", "trimStart": 0.25})).unwrap();
+        let got = c.execute("tile.subtitles", json!({"tile": "Line"})).unwrap();
+        assert_eq!(got["cues"][0]["text"], "Hello there", "in time order");
+        assert_eq!((&got["heard"], &got["cues_source"]["kind"]), (&json!(1), &json!("srt")), "a trim keeps every line; one is heard");
+        assert_eq!(c.execute("tile.get", json!({"tile": "Line"})).unwrap()["subtitles"], 2);
+        // From the CLI the list may come as text.
+        let text = json!([{"start": 0.0, "end": 0.1, "text": "One"}]).to_string();
+        assert_eq!(c.execute("tile.subtitlesSet", json!({"tile": "Other", "cues": text})).unwrap()["lines"], 1);
+        for bad in [json!({"tile": "Other"}), json!({"tile": "Other", "cues": []}), json!({"tile": "Other", "cues": [{"text": "x"}]}), json!({"tile": "Other", "cues": {"a": 1}}), json!({"tile": "Other", "cues": "[nope"}), json!({"tile": "Other", "cues": [{"start": 0, "end": 1, "text": "x"}], "cues_source": "srt"})] {
+            assert_eq!(c.execute("tile.subtitlesSet", bad.clone()).unwrap_err().code, "bad_params", "{bad}");
+        }
+        c.execute("edit.undo", json!({})).unwrap();
+        assert!(c.store.library.tile(ids[1]).unwrap().subtitles.is_empty(), "a set is one undo step");
+
+        // A line aligned by hand stays when the source sends it again; keepAligned: false replaces it.
+        let mut line = c.store.library.tile(ids[0]).unwrap().subtitles[0].clone();
+        line.words = line.even_words();
+        line.aligned = true;
+        c.store.library.tile_mut(ids[0]).unwrap().subtitles[0] = line.clone();
+        let again = json!([{"start": 0.0, "end": 0.25, "text": "hello  there"}, {"start": 0.3, "end": 0.45, "text": "Later"}]);
+        let r = c.execute("tile.subtitlesSet", json!({"tile": "Line", "cues": again})).unwrap();
+        assert_eq!(r["kept_aligned"], 1);
+        let t = c.store.library.tile(ids[0]).unwrap();
+        assert_eq!((&t.subtitles[0], t.subtitles_source.as_ref().map(|s| s.kind.as_str())), (&line, Some("srt")), "kept, and the source too");
+        c.execute("tile.subtitlesSet", json!({"tile": "Line", "cues": again, "keepAligned": false})).unwrap();
+        let t = c.store.library.tile(ids[0]).unwrap();
+        assert_eq!((t.subtitles[0].aligned, t.subtitles_source.is_none()), (false, true));
+        c.execute("edit.undo", json!({})).unwrap();
+        assert!(c.store.library.tile(ids[0]).unwrap().subtitles[0].aligned);
+
+        // Copies carry them; Replace Audio drops them, and undo brings them back.
+        let dup: Uuid = serde_json::from_value(c.execute("tile.duplicate", json!({"tile": "Line"})).unwrap()["id"].clone()).unwrap();
+        let copied = c.execute("tile.copy", json!({"tile": ids[0], "row": 1})).unwrap();
+        let copy: Uuid = serde_json::from_value(copied["tiles"][0]["tile"].clone()).unwrap();
+        for id in [dup, copy] {
+            assert_eq!(c.store.library.tile(id).unwrap().subtitles, c.store.library.tile(ids[0]).unwrap().subtitles);
+        }
+        let other = root.join("New.wav");
+        wav::write_tone(&other, 8000, 0.5, &[440.0], 0.4).unwrap();
+        c.execute("tile.replaceAudio", json!({"tile": ids[0], "path": other})).unwrap();
+        wait_loaded(&mut c);
+        let t = c.store.library.tile(ids[0]).unwrap();
+        assert!(t.subtitles.is_empty() && t.subtitles_source.is_none(), "they described the old audio");
+        c.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(c.store.library.tile(ids[0]).unwrap().subtitles.len(), 2);
+
+        let r = c.execute("tile.subtitlesClear", json!({"tile": ids[0]})).unwrap();
+        assert_eq!(r["removed"], 2);
+        assert!(c.store.library.tile(ids[0]).unwrap().subtitles_source.is_none());
+        c.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(c.store.library.tile(ids[0]).unwrap().subtitles.len(), 2, "a clear is one undo step");
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]
@@ -7680,5 +8179,99 @@ mod tests {
         assert_eq!(c.execute("tile.set", json!({"tile": "Stereo", "channels": "left,right"})).unwrap_err().code, "bad_params", "stereo has no mix");
         c.execute("tile.play", json!({"tile": "surround"})).unwrap();
         assert_eq!(c.execute("tile.set", json!({"tile": "surround", "channels": "auto"})).unwrap()["channels"], "auto");
+    }
+
+    fn set_names(c: &Controller) -> Vec<String> {
+        c.store.library.sets.iter().map(|s| s.name.clone()).collect()
+    }
+
+    /// A batch is one undo step, and nothing in it records a step of its own.
+    #[test]
+    fn a_batch_is_one_undo_step() {
+        let (mut c, _root) = controller();
+        c.execute("set.create", json!({"name": "Main"})).unwrap();
+        let before = set_names(&c);
+        let r = c
+            .execute("batch.run", json!({"steps": [
+                {"command": "set.create", "params": {"name": "A"}},
+                {"command": "set.create", "params": {"name": "B"}},
+                {"command": "set.rename", "params": {"set": "A", "name": "Alpha"}},
+            ]}))
+            .unwrap();
+        assert_eq!(r["ok"], true);
+        assert_eq!(r["undo"], "Script");
+        assert_eq!(r["changes"]["sets"]["added"].as_array().unwrap().len(), 2);
+        assert!(set_names(&c).contains(&"Alpha".to_owned()));
+        assert_eq!(c.history.undo_label(), Some("Script"));
+        c.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(set_names(&c), before);
+        // And a step before the batch is still there to undo.
+        assert_eq!(c.history.undo_label(), Some("New Set"));
+    }
+
+    /// Atomic (the default), a failing step puts the sets back and records nothing;
+    /// with atomic false the steps before it stay, as one step.
+    #[test]
+    fn a_failing_batch_rolls_back_unless_asked_not_to() {
+        let (mut c, _root) = controller();
+        let before = set_names(&c);
+        let steps = json!([
+            {"command": "set.create", "params": {"name": "Kept?"}},
+            {"command": "set.rename", "params": {"set": "No Such Set", "name": "x"}},
+            {"command": "set.create", "params": {"name": "After"}},
+        ]);
+        let r = c.execute("batch.run", json!({"steps": steps})).unwrap();
+        assert_eq!((r["ok"].clone(), r["failed"].clone(), r["rolledBack"].clone()), (json!(false), json!(2), json!(true)));
+        assert_eq!(r["steps"].as_array().unwrap().len(), 2, "it stops at the failure");
+        assert_eq!(r["steps"][1]["error"]["code"], "not_found");
+        assert_eq!(set_names(&c), before);
+        assert_eq!(c.history.undo_label(), None);
+
+        let r = c.execute("batch.run", json!({"steps": steps, "atomic": false})).unwrap();
+        assert_eq!((r["ok"].clone(), r["rolledBack"].clone(), r["undo"].clone()), (json!(false), json!(false), json!("Script")));
+        assert!(set_names(&c).contains(&"Kept?".to_owned()) && set_names(&c).contains(&"After".to_owned()));
+    }
+
+    /// A dry run reports what would change and changes nothing; it refuses what putting
+    /// the sets back couldn't undo.
+    #[test]
+    fn a_dry_run_changes_nothing() {
+        let (mut c, _root) = controller();
+        c.execute("set.create", json!({"name": "Main"})).unwrap();
+        let before = set_names(&c);
+        let undo = c.history.undo_label();
+        let r = c
+            .execute("batch.run", json!({"dryRun": true, "steps": [
+                {"command": "set.create", "params": {"name": "Rehearsal"}},
+                {"command": "set.list"},
+            ]}))
+            .unwrap();
+        assert_eq!(r["dryRun"], true);
+        assert_eq!(r["changes"]["sets"]["added"][0]["name"], "Rehearsal");
+        assert_eq!(r["undo"], Value::Null);
+        assert_eq!(set_names(&c), before);
+        assert_eq!(c.history.undo_label(), undo);
+        for (id, params) in [("tile.add", json!({"paths": ["/tmp/x.wav"]})), ("tile.play", json!({"tile": "x"})), ("settings.coloredPads", json!({}))] {
+            let e = c.execute("batch.run", json!({"dryRun": true, "steps": [{"command": id, "params": params}]})).unwrap_err();
+            assert_eq!(e.code, "bad_params", "{id}");
+        }
+    }
+
+    /// Steps are checked before any runs: a policy's refusal, an unknown command or a
+    /// nested batch stops the whole batch.
+    #[test]
+    fn batch_steps_are_checked_first() {
+        let (mut c, _root) = controller();
+        let before = set_names(&c);
+        let safe = Policy::safe(vec![]);
+        let steps = json!([{"command": "set.create", "params": {"name": "First"}}, {"command": "set.delete", "params": {"set": "First"}}]);
+        let e = c.execute_with("batch.run", json!({"steps": steps}), &safe).unwrap_err();
+        assert_eq!(e.code, "refused");
+        assert_eq!(set_names(&c), before, "not even the first step ran");
+        let e = c.execute("batch.run", json!({"steps": [{"command": "no.such"}]})).unwrap_err();
+        assert_eq!(e.code, "unknown_command");
+        let e = c.execute("batch.run", json!({"steps": [{"command": "batch.run", "params": {"steps": []}}]})).unwrap_err();
+        assert_eq!(e.code, "bad_params");
+        assert_eq!(c.execute("batch.run", json!({})).unwrap_err().code, "bad_params");
     }
 }

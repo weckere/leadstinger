@@ -2380,10 +2380,11 @@ checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
 
 [[package]]
 name = "leadstinger"
-version = "0.3.2"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "ashpd",
+ "block2 0.6.2",
  "core-foundation-sys",
  "cpal",
  "directories",
@@ -2404,6 +2405,7 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-avf-audio",
  "objc2-foundation 0.3.2",
+ "objc2-speech",
  "plist",
  "pollster 0.4.0",
  "raw-window-handle",
@@ -3116,6 +3118,17 @@ dependencies = [
  "objc2-core-graphics",
  "objc2-foundation 0.3.2",
  "objc2-metal 0.3.2",
+]
+
+[[package]]
+name = "objc2-speech"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9eb609f9d2a25e0f8b76954f3acaa58348ce2a91285fe867643b2224ac4d263"
+dependencies = [
+ "block2 0.6.2",
+ "objc2 0.6.5",
+ "objc2-foundation 0.3.2",
 ]
 
 [[package]]

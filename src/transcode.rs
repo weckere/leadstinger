@@ -76,7 +76,7 @@ pub fn install_hint() -> String {
 
 /// Where else to look when ffmpeg isn't on PATH: an app started from the macOS Finder or
 /// Dock gets only the system PATH, without Homebrew, MacPorts or Nix (D-073).
-fn extra_dirs() -> Vec<PathBuf> {
+pub fn extra_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin", "/run/current-system/sw/bin", "/nix/var/nix/profiles/default/bin"]
         .iter()
         .map(PathBuf::from)
@@ -94,21 +94,27 @@ pub fn find_ffmpeg() -> Result<PathBuf, String> {
 }
 
 pub fn find_in(explicit: Option<OsString>, path: Option<OsString>, extra: &[PathBuf]) -> Result<PathBuf, String> {
+    find_named(explicit, path, extra, "FFMPEG", &["ffmpeg"], "ffmpeg")
+}
+
+/// An optional program found the way ffmpeg is: `explicit` (the `LEADSTINGER_<env>`
+/// setting) if set, else the first of `names` on PATH, else in `extra`. The error says
+/// what was looked for, to finish a sentence ("and …"); `what` names the program in it.
+pub fn find_named(explicit: Option<OsString>, path: Option<OsString>, extra: &[PathBuf], env: &str, names: &[&str], what: &str) -> Result<PathBuf, String> {
     if let Some(p) = explicit.filter(|p| !p.is_empty()) {
         let p = PathBuf::from(p);
         return if is_program(&p) {
             Ok(p)
         } else {
-            Err(format!("{} is set to {}, which isn't a program", crate::brand::env_name("FFMPEG"), p.display()))
+            Err(format!("{} is set to {}, which isn't a program", crate::brand::env_name(env), p.display()))
         };
     }
-    let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
-    path.iter()
-        .flat_map(std::env::split_paths)
-        .chain(extra.iter().cloned())
-        .map(|d| d.join(exe))
+    let dirs: Vec<PathBuf> = path.iter().flat_map(std::env::split_paths).chain(extra.iter().cloned()).collect();
+    names
+        .iter()
+        .flat_map(|n| dirs.iter().map(move |d| d.join(if cfg!(windows) { format!("{n}.exe") } else { (*n).to_owned() })))
         .find(|p| is_program(p))
-        .ok_or_else(|| "ffmpeg isn't installed".to_owned())
+        .ok_or_else(|| format!("{what} isn't installed"))
 }
 
 fn is_program(p: &Path) -> bool {

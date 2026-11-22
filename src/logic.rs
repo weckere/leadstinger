@@ -519,11 +519,6 @@ impl Ballistics {
     }
 }
 
-/// Search: the title or the notes contain `query`, ignoring case. `query` is lower case.
-pub fn matches_query(t: &Tile, query: &str) -> bool {
-    t.title.to_lowercase().contains(query) || t.notes.to_lowercase().contains(query)
-}
-
 /// Whether GO stops at this tile: it has audio or an action, and isn't disabled.
 pub fn is_cue(t: &Tile) -> bool {
     (t.file.is_some() || t.action.is_some()) && !t.disabled

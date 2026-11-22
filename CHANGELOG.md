@@ -6,6 +6,115 @@ All notable changes to LeadStinger. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-22
+
+### Added
+
+- **Scripts are one undo step.** `leadstinger-cli run` sends a script as one batch
+  (`batch.run`): nothing else acts between its steps, and one Edit ▸ Undo takes it all
+  back. `run --dry-run` (or `batch.run {dryRun}`) lists the sets and tiles a script would
+  add, remove and change, and changes nothing.
+- **`--safe` holds in the app too.** A program talking to the control socket can send a
+  `policy` message; the app then refuses on that connection everything `--safe` refuses,
+  the steps of a batch included. The CLI sends it for `--safe` and `--ssh`.
+- **`leadstinger-cli connect`**: the control socket's protocol on stdin and stdout, for
+  programs that send many commands; to the running app, or to the library when it's
+  closed. `--safe` holds for the whole connection, and over SSH `--ssh` allows it.
+- **`leadstinger-cli mcp`**, an MCP server on stdio with four tools in front of every
+  command: `commands`, `query`, `run` (one command or a batch, dry runs included) and
+  `screenshot` (the window as an image). Deleting and quitting are refused unless it's
+  started with `--allow-destructive`; `--safe` holds, and over SSH `--ssh` allows it.
+- **A Python client**, `clients/python/leadstinger.py`, generated from the command
+  registry (`commands --python`): every command as a method, `ls.batch()` for one-undo-step
+  scripts and dry runs, errors as `leadstinger.Error`.
+- **`commands --json`** gives each command's `undo` flag and a JSON Schema of its
+  parameters (`inputSchema`), read from its summary, plus the summary's `note` and
+  `returns`.
+
+- **Adding and deleting subtitle lines.** In the waveform editor, type a new line under
+  SUBTITLES and press Enter (or Add Line): it goes over the selected stretch, or from the
+  playhead or the cursor, its words placed on the sounds in it. A click on a line's bar
+  gives it the keyboard: Left/Right move the whole line, Delete or Backspace delete it;
+  Delete Line does the same. Each is one undo step. Lines added here stay when the clip's
+  subtitles are sent again or the tile is transcribed. New commands `tile.subtitleAdd` and
+  `tile.subtitleDelete`.
+- **Transcription.** Transcribe (the inspector's Sound tab, the waveform editor's
+  SUBTITLES row, a tile's menu) listens to a sound and writes its subtitles, marked
+  machine-made, so a search finds the tile by what's said in it; each word's start is
+  then moved onto the sound it starts on. A tile that already has subtitles keeps its
+  text: its lines get word timings, and the editor's Align Words times one line again;
+  what's said where none of its lines is spoken (lyrics the subtitles leave out, an
+  ad-lib) is added as new lines, each marked machine-made, as QuipClipper's gap mode
+  does (`tile.transcribe --gaps false` to leave them out). Transcribing again never
+  doubles them and keeps the ones you've changed; one whose text you retype becomes your
+  own line. A set's menu has Transcribe Tiles
+  Without Subtitles…, which can also fill the gaps of the tiles that have subtitles. It runs only when asked,
+  one tile at a time in the background, with progress on the tile and Cancel in the
+  status bar; each tile is one undo step. On a Mac or iPad it uses Apple's speech
+  recognition, on the device only, after you allow it with Settings ▸ Subtitles ▸ Allow
+  Speech Recognition… (the app never asks by itself; a language without an on-device
+  model is refused, never sent to Apple). Or whisper.cpp's `whisper-cli` with a model you
+  choose in Settings ▸ Subtitles, both installed separately: nothing is downloaded. From
+  `leadstinger-cli`: `tile.transcribe`, `set.transcribe`, `tile.alignWords`,
+  `transcribe.status`, `transcribe.cancel`, `transcribe.engines`,
+  `transcribe.allowSpeech` and `settings.transcribe`.
+- **Transcription on QuipClipper.** A connected QuipClipper that transcribes (one with
+  `POST /api/transcribe`) is an engine too: the tile's audio is sent to it, only when you
+  ask, and it sends back the lines with each word's time, keeping nothing. Settings ▸
+  Subtitles says which server will be used and why, and lets you pick one when several
+  can; the set's confirmation and the Transcribe tooltip name the server the audio goes
+  to. `settings.transcribe --quipServer`, and `transcribe.engines` lists each server.
+- **Subtitles from QuipClipper.** A tile keeps the lines spoken in its clip, with their
+  times (and each word's, when the source has them), as QuipClipper sends them: from the
+  QuipClipper window's Add, from a `leadstinger://quip` link (read from the clip's entry
+  on the server) and in set files, which now carry them both ways. The inspector's Sound
+  tab lists them line by line with their start times, dimming lines outside the trim.
+  They are kept in the sound file's time, so a trim never moves them; copies keep them,
+  Replace Audio drops them. Lines that can't be read are skipped and the import says how
+  many. `tile.subtitles`, `tile.subtitlesSet` and `tile.subtitlesClear` read, set and
+  remove them from `leadstinger-cli` (with undo).
+- **A search box at the top of the window.** It sits in Console's toolbar and in a gap
+  in Panel's top bar (a magnifier key when a narrow window has no room for it, a field
+  as soon as it's in use), and finds tiles in every set by title, the name of the file
+  they were made from, notes and subtitles, with every word matching in any order and
+  without regard to case or accents. The board isn't rearranged: what the search
+  doesn't find is dimmed in place. A list under the box shows the hits from every set
+  with the line that matched; Up and Down choose, Enter goes to the tile (its set,
+  selected, ready to play with another Enter), ⌘/Ctrl+Enter plays it, Esc clears and
+  gives the keyboard back to the board. `leadstinger-cli tile.search "words"` returns
+  the same hits as JSON; `view.search` gains `clear`, `go`, `play` with `index`.
+- Tiles remember the name of the file they were imported from, so the search finds
+  them by it.
+- **Aligning subtitle words in the waveform editor.** A tile's subtitles show in a lane
+  across the top of the waveform, under the ruler, at every zoom: each line as a bar and,
+  zoomed in, each word as a block (dashed while it's only a guess spread over the line,
+  yellow once placed by hand), with the spoken word marked while the tile plays. Click a
+  word and the arrow keys nudge it at once: Left/Right move its start, its end or the
+  whole word 10 ms (Shift: 100 ms), Up/Down choose which, and Enter starts it at the
+  playhead and moves to the next word, to tap a line in while it plays. Green guide lines
+  run from the word's edges down through the waveform to line them up by eye. Drag a
+  word's edges, the word, or a whole line; edges snap to where sounds start (shown as
+  ticks; Alt turns snapping off, Shift leaves the neighbouring word's edge alone).
+  Auto-Align suggests a placement from the audio; Reset Line puts the source's timing
+  back; words can be retyped, split and joined, and a fixed spelling survives the next
+  copy from QuipClipper. Each change is one undo step, a locked set stays read-only, and
+  every step is a command (`tile.subtitleNudge`, `tile.subtitleEdge`,
+  `tile.subtitleWordMove`, `tile.subtitleTap`, `tile.subtitleLineMove`,
+  `tile.subtitleAutoAlign`, `tile.subtitleReset`, `tile.subtitleWordText`,
+  `tile.subtitleWordJoin`, `tile.subtitleText`, `view.editorWord`).
+- **Icon buttons in the waveform editor.** The cursor, selection and subtitle actions are
+  small drawn icons with their names on hover, instead of rows of wordy buttons; the
+  Snap checkbox no longer wraps letter by letter in a narrow window.
+
+### Changed
+
+- **A script that fails keeps nothing.** `run` used to keep the steps before a failure;
+  now its changes to sets and tiles are put back (settings it changed stay). `--keep-going`
+  keeps the steps that worked, as before.
+- **Find no longer replaces the board with its hits**, and Enter in it goes to a tile
+  instead of playing the first one (⌘/Ctrl+Enter plays). `view.search {play}` keeps the
+  search open.
+
 ## [0.3.2] - 2026-11-11
 
 ### Changed
@@ -42,6 +151,18 @@ All notable changes to LeadStinger. The format follows
 
 - Panel's status bar no longer says "No output" in a silent run (`LEADSTINGER_SILENT=1`),
   so screenshots show the app as people see it.
+- `leadstinger-cli`: an option the command doesn't take, or a `{…}`/`[…]` value that
+  isn't valid JSON, is now an error (exit code 2) instead of being dropped without a
+  word. `tile.subtitlesSet --cues_source '{…}'` (or `--cues-source`) now reaches the app;
+  before, it was renamed `cuesSource` and ignored.
+- `leadstinger-cli view.quip --folder` sends the folder in the QuipClipper library as
+  given; it was made a path on this computer, so the window asked the server for a
+  folder that isn't there and showed 404 (and `--safe` refused it).
+- Panel: the inspector's small section heads (TILE, SET, PICTURE, CHANNELS, MESSAGES,
+  CUE, CONTROL, ACTION) are drawn in the theme's dim text; they were black on Panel's
+  black.
+- Set windows: undoing a change made in a set window no longer switches the main
+  window to that set.
 
 ## [0.3.0] - 2026-11-10
 
@@ -904,6 +1025,7 @@ The first public release.
 - A Nix flake with a package, a dev shell, the NixOS module and a VM test.
 
 [Unreleased]: https://github.com/weckere/leadstinger/compare/v0.3.2...HEAD
+[0.4.0]: https://github.com/weckere/leadstinger/releases/tag/v0.4.0
 [0.3.2]: https://github.com/weckere/leadstinger/releases/tag/v0.3.2
 [0.3.1]: https://github.com/weckere/leadstinger/releases/tag/v0.3.1
 [0.3.0]: https://github.com/weckere/leadstinger/releases/tag/v0.3.0

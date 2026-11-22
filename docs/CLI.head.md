@@ -15,24 +15,51 @@ the commands that only change the library.
 leadstinger-cli <command> [<main argument>…] [--param value]… [--params '{"json": …}']
 leadstinger-cli commands [--filter TEXT] [--json | --markdown]
 leadstinger-cli help <command>
-leadstinger-cli run <script.jsonl | ->        one {"command": …, "params": {…}} per line
+leadstinger-cli run [--dry-run] <script.jsonl | ->   one {"command": …, "params": {…}} per line, as one batch (see Scripts)
 leadstinger-cli watch                         events from the app, one per line
+leadstinger-cli connect                       the socket protocol on stdin/stdout, for programs (see Programs)
+leadstinger-cli mcp [--allow-destructive]     an MCP server on stdio, for clients with no shell (see MCP)
 leadstinger-cli serve [--silent] [--device NAME]   LeadStinger without a window (see Headless)
 ```
 
 Global options: `--json` (machine output; the default when stdout isn't a terminal),
 `--offline` (never contact the app), `--data-dir DIR` (another library; default:
 `LEADSTINGER_DATA_DIR` or the usual place), `--safe` (refuse destructive commands and files
-outside `--allow-dir DIR`, for agents), `--keep-going` (`run`: don't stop at an error).
+outside `--allow-dir DIR`, for agents; the app holds the connection to it too), `--keep-going`
+(`run`: don't stop at an error, and keep the steps before it), `--dry-run` (`run`: report
+what the script would change, and change nothing).
 
 - **Main argument.** Each command has one parameter you can give without its name, e.g.
   `leadstinger-cli tile.trigger "Rimshot"` or `leadstinger-cli tile.add *.wav`. Commands that
   take a tile and a file also accept both: `leadstinger-cli tile.picture Applause logo.png`.
 - **Other parameters** are `--name value`. `--fade-in 0.5` and `--fadeIn 0.5` are the
-  same. A value is a number, `true`/`false`, `null` or JSON when it looks like one, and
-  text otherwise. Relative paths are relative to where you run the command.
+  same, and so are `--cues-source` and `--cues_source`. A value is a number,
+  `true`/`false`, `null` or JSON when it looks like one, and text otherwise; a value
+  that starts with `{` or `[` must be valid JSON. An option the command doesn't take is
+  an error (exit code 2), never ignored; `--params '{…}'` sends a JSON object as it is.
+  Relative paths of files on this computer are relative to where you run the command;
+  a folder on a QuipClipper server is sent as given.
 - **Shortcuts:** `status`, `list` (`tile.list`), `sets` (`set.list`), `trigger`, `play`,
   `stop`, `stop-all`, `go` (`cue.go`), `add` (`tile.add`).
+
+## Scripts
+
+`run` sends its script to the app as one `batch.run`: the steps run one after another with
+nothing else acting in between, and they undo as one step (Edit ▸ Undo; `edit.undo` answers `{"undid": "Script"}`). When a step
+fails, the script stops and its changes to sets and tiles are put back, so nothing is half
+done; `--keep-going` runs the rest and keeps what worked. As with undo, settings, the view
+and playback aren't put back. A step that starts an export, a transcription or an import
+isn't waited for inside the batch; `run` waits for it afterwards, as a single command does.
+
+To see what a script would change first, add `--dry-run`:
+
+```
+leadstinger-cli run --dry-run retitle.jsonl
+```
+
+It lists the sets and tiles the script would add, remove and change (with which fields), then
+changes nothing. A dry run takes only queries and changes that undo can take back (no
+imports, recordings or playback); `batch.run` with `dryRun: true` is the same for programs.
 
 ## Referring to tiles and sets
 
@@ -113,6 +140,77 @@ imports = [ leadstinger.nixosModules.default ];
 services.leadstinger = { enable = true; user = "kiosk"; };   # also: dataDir, device, silent, linger
 ```
 
+## Programs
+
+`leadstinger-cli connect` is for programs that send many commands: it stays running and
+speaks the control socket's protocol on stdin and stdout, one JSON object per line.
+
+```
+→ {"id": 1, "command": "tile.trigger", "params": {"tile": "Rimshot"}}
+← {"id": 1, "ok": true, "result": {"tile": "…", "state": "playing"}}
+← {"id": 2, "ok": false, "error": {"code": "ambiguous", "message": "…", "candidates": [...]}}
+```
+
+With the app running it passes each line to the app (and its events, after
+`{"command": "events.subscribe"}`). With the app closed it opens the library itself and
+holds the library lock until its stdin closes, so the app waits for it; commands that need
+the app answer `not_running`, and `hello` answers `offline: true`. `--safe` and
+`--allow-dir` set the connection's policy first; a `{"command": "policy", ...}` line can
+narrow it further but never widen it. Over SSH, the `--ssh` forced command allows
+`ssh you@host connect` too, always safe.
+
+### Python
+
+`clients/python/leadstinger.py` is a Python client generated from the command registry,
+one file with nothing to install (Python 3.8 or newer). It runs `leadstinger-cli connect`,
+so it reaches the app or the library the same way. Every command is a method, grouped by
+area, with the registry's parameter names as keyword arguments; the main parameter may come
+first, without its name:
+
+```python
+import leadstinger
+with leadstinger.connect() as ls:              # safe=True, allow_dirs=[...], ssh="you@host", data_dir=...
+    ls.tile.trigger("Rimshot")
+    with ls.batch() as b:                      # one batch.run: one undo step, nothing kept on failure
+        for t in ls.tile.list("Show"):
+            b.tile.set(t["id"], fadeIn=0.2)
+    print(b.result["changes"])
+```
+
+A failed command raises `leadstinger.Error` (`code`, `message`, `candidates`);
+`ls.batch(dry_run=True)` reports the changes and changes nothing. Any installed
+`leadstinger-cli` writes the client that matches it: `leadstinger-cli commands --python >
+leadstinger.py`. Commands that start a job (an export, a transcription) return its id at
+once; ask `ls.render.status(job)` or `ls.transcribe.status(job)` until it's finished.
+
+### MCP
+
+`leadstinger-cli mcp` is an MCP server on stdio, for AI clients that can't run a shell
+(an agent that can should use the CLI or the Python client: one script costs less than
+many tool calls). It offers four tools in front of every command, so it adds little to a
+client's context:
+
+| Tool | Does |
+|---|---|
+| `commands` | finds commands by words (`filter`), or gives one command's parameters and JSON Schema (`id`) |
+| `query` | runs a read-only command: `status`, `tile.list`, `set.list`, … |
+| `run` | runs one command, or several as one batch (`steps`, `atomic`, `dryRun`), as `batch.run` does |
+| `screenshot` | the window as a PNG image (needs the app and its window) |
+
+Each call reaches the running app, or the library when the app is closed (locked only
+for that call, so the app can start while a client is connected). Deleting sets and tiles
+and quitting the app are refused unless the server is started with `--allow-destructive`;
+`--safe` and `--allow-dir` work as for any command. A job (an export, a transcription)
+returns its id at once: ask `query` `render.status` or `transcribe.status`. To add it to
+Claude Code:
+
+```
+claude mcp add leadstinger -- leadstinger-cli mcp
+```
+
+Over SSH, the `--ssh` forced command allows `ssh you@host mcp` (always safe, and never
+with `--allow-destructive`), so a client on another machine can run the server there.
+
 ## Agents
 
 `skills/leadstinger/SKILL.md` teaches an AI agent (Claude Code) to drive the app with this
@@ -133,7 +231,8 @@ command="leadstinger-cli --ssh",restrict ssh-ed25519 AAAA… my-agent
 
 in `~/.ssh/authorized_keys` of the user who runs the app. (Use the full path to
 `leadstinger-cli`; a dedicated user with sudo rights to run it as you is stricter still.) The
-agent then runs `ssh you@host 'trigger key:1'` or `ssh you@host 'run -' < show.jsonl`.
+agent then runs `ssh you@host 'trigger key:1'`, `ssh you@host 'run -' < show.jsonl` or
+`ssh you@host connect` (see Programs; the Python client's `connect(ssh="you@host")`).
 In this mode:
 
 - the command comes from `$SSH_ORIGINAL_COMMAND`, split like plain shell words with no
@@ -142,6 +241,11 @@ In this mode:
   on the forced command line are refused (exit 5);
 - the remote side can't choose `--data-dir`, `--allow-dir` or `--offline`, and `run`
   reads its script only from stdin.
+
+A program that talks to the control socket itself can ask for the same rules: send
+`{"command": "policy", "params": {"safe": true, "allowDirs": ["/path"]}}` first, and the
+app refuses (code `refused`) everything `--safe` would on that connection, the steps of a
+batch included. A connection can narrow its policy but never widen it again.
 
 ## OSC
 

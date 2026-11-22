@@ -7,7 +7,12 @@
 //! ← {"id": 7, "ok": false, "error": {"code": "ambiguous", "message": "…", "candidates": [...]}}
 //! → {"command": "events.subscribe"}   then one {"event": …} line per change
 //! → {"command": "hello"}              ← {"ok": true, "result": {"app", "version", "pid"}}
+//! → {"command": "policy", "params": {"safe": true, "allowDirs": [...]}}   ← the policy now in force
 //! ```
+//!
+//! A connection starts unrestricted. A `policy` message narrows it (never widens it), and
+//! from then on the socket refuses, with code `refused`, every command the policy doesn't
+//! allow, the steps of a `batch.run` included ([`Policy`]). The CLI sends one for `--safe`.
 //!
 //! The [`Controller`] is shared through a [`Lender`]: the window borrows it for each
 //! frame, and between frames the socket threads run commands on it directly. So a
@@ -19,7 +24,9 @@
 //! their private runtime dir). It has no network listener; the only one in the app is
 //! OSC (osc.rs), off by default and on localhost unless turned on for the network.
 
+use crate::commands::spec;
 use crate::controller::{CmdError, Controller};
+use crate::policy::Policy;
 use serde_json::{json, Value};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
@@ -176,6 +183,7 @@ pub fn serve(lender: Arc<Lender>, data_dir: &Path, wake: Option<eframe::egui::Co
 
 fn handle(stream: UnixStream, lender: &Lender, wake: Option<&eframe::egui::Context>) -> io::Result<()> {
     let mut out = stream.try_clone()?;
+    let mut policy = Policy::open();
     for line in BufReader::new(stream).lines() {
         let line = line?;
         if line.trim().is_empty() {
@@ -200,8 +208,19 @@ fn handle(stream: UnixStream, lender: &Lender, wake: Option<&eframe::egui::Conte
                         }
                         return Ok(());
                     }
+                    "policy" => match Policy::from_json(&params) {
+                        Ok(asked) => {
+                            policy = policy.narrow(&asked);
+                            (id, Ok(policy.to_json()))
+                        }
+                        Err(e) => (id, Err(e)),
+                    },
                     _ => {
-                        let r = lender.with(|c| c.execute(&command, params));
+                        let allowed = match spec(&command) {
+                            Some(s) => policy.check(s, &params),
+                            None => Ok(()), // the Controller says it's unknown
+                        };
+                        let r = allowed.and_then(|()| lender.with(|c| c.execute_with(&command, params, &policy)));
                         if let Some(ctx) = wake {
                             ctx.request_repaint();
                         }
@@ -215,7 +234,8 @@ fn handle(stream: UnixStream, lender: &Lender, wake: Option<&eframe::egui::Conte
     Ok(())
 }
 
-fn encode(id: Value, reply: Result<Value, CmdError>) -> Value {
+/// A reply line: `{id, ok: true, result}` or `{id, ok: false, error}`.
+pub fn encode(id: Value, reply: Result<Value, CmdError>) -> Value {
     match reply {
         Ok(result) => json!({"id": id, "ok": true, "result": result}),
         Err(e) => json!({"id": id, "ok": false, "error": error_json(&e)}),
@@ -273,21 +293,30 @@ fn decode_reply(line: &str) -> Result<Value, CmdError> {
     if v["ok"].as_bool() == Some(true) {
         return Ok(v["result"].clone());
     }
-    let e = &v["error"];
-    // Back onto the Controller's static codes (the CLI's exit codes use them).
+    Err(error_from_json(&v["error"]))
+}
+
+/// A reply line's result, or its error.
+pub fn error_from_reply(line: &str) -> Result<Value, CmdError> {
+    decode_reply(line)
+}
+
+/// An error as `error_json` wrote it, back onto the Controller's static codes (the CLI's
+/// exit codes use them).
+pub fn error_from_json(e: &Value) -> CmdError {
     let code = e["code"].as_str().and_then(|c| CODES.iter().find(|k| **k == c).copied()).unwrap_or("failed");
-    Err(CmdError {
+    CmdError {
         code,
         message: e["message"].as_str().unwrap_or("the command failed").to_owned(),
         candidates: e["candidates"].as_array().cloned().unwrap_or_default(),
-    })
+    }
 }
 
 const CODES: &[&str] = &[
     "failed",
     "bad_params", "not_found", "ambiguous", "unknown_command", "loading", "no_audio", "end_of_cues", "nothing_to_paste",
     "decode_failed", "not_playing", "last_set", "device_failed", "bad_request", "io", "no_window", "not_connected",
-    "preview_unavailable", "not_open",
+    "preview_unavailable", "not_open", "refused", "locked", "not_running",
 ];
 
 #[cfg(test)]

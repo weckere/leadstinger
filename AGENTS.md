@@ -31,11 +31,18 @@ screens, graphics or fonts from films, series or games.
 | `src/commands.rs` | the command registry: every action, its parameters and its kind |
 | `src/controller.rs` | runs commands against the library and the mixer |
 | `src/control.rs` | the control socket the CLI talks to |
+| `src/policy.rs` | what `--safe` refuses, checked by the CLI and again by the socket for each connection |
+| `src/schema.rs` | JSON Schemas read from the registry's parameter summaries (`commands --json`) |
+| `src/pyclient.rs`, `clients/python/leadstinger.py` | the Python client, generated from the registry (`commands --python`) |
+| `src/mcp.rs` | `leadstinger-cli mcp`: the MCP protocol and its four tools; the CLI supplies the backend |
 | `src/app.rs`, `src/app/` | the egui interface; `panel.rs` is the Panel theme |
 | `src/theme.rs` | colours and fonts; must match `docs/design/*tokens.json`; `theme/contrast.rs` checks WCAG AA |
 | `src/themes.rs` | user themes: the `.lstheme` format, `assets/themes` (the built-ins in it), the themes folder |
 | `src/brand.rs` | the app's names in one place |
 | `src/setfile.rs` | set files (`.lsset`): import and export of sets as one zip |
+| `src/subtitles.rs` | a tile's subtitles (QuipClipper's `cues`): the types, lenient reading with size limits, merging that keeps hand-aligned lines |
+| `src/align.rs` | aligning subtitle words with the audio: the onset finder and the rules for moving and retyping words and lines (no UI; the editor's lane is `src/app/subtitle_lane.rs`) |
+| `src/transcribe.rs`, `src/transcribe/` | transcription (no UI): the engine seam, preparing 16 kHz mono audio, moving words onto their sounds, timing known text, and the optional whisper-cli engine; the commands and job queue are `src/controller/transcribe.rs`, the buttons `src/app/transcribe_ui.rs` |
 | `src/starter.rs`, `src/demo.rs`, `src/wav.rs` | first-launch starter packs; the generated demo library |
 | `src/menu.rs`, `src/native_menu.rs` | the menu model; the macOS menu bar |
 | `src/paste.rs`, `src/picture.rs` | pasting files in; tile pictures and cover art |
@@ -64,9 +71,10 @@ libraries the README lists.
   `open -g -n LeadStinger.app --env LEADSTINGER_BACKGROUND=1 …` (`-g` keeps it from
   coming to the front).
 - **New actions** go in the command registry (`src/commands.rs`) and the Controller, so
-  the menus, the CLI and agents all get them. Then regenerate the CLI reference:
-  `cargo run --bin leadstinger-cli -- commands --markdown > docs/CLI.md` (a test fails
-  if it's stale).
+  the menus, the CLI and agents all get them. Then regenerate the CLI reference and the
+  Python client: `cargo run --bin leadstinger-cli -- commands --markdown > docs/CLI.md`
+  and `cargo run --bin leadstinger-cli -- commands --python > clients/python/leadstinger.py`
+  (a test fails if either is stale).
 - On Linux, `scripts/linux-check.sh` runs the tests, a release build and a headless
   screenshot (`LINUX_CHECK_FULL=1` adds `nix build` of the package); clones on one host
   share a cargo target dir and the checks queue on a lock.

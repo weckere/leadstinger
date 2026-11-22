@@ -80,11 +80,23 @@ Copyright 2022-2024 Google LLC and Copyright 2025 the flacenc-rs developers), co
 from crates.io and used unmodified. The licence's text is at
 <https://www.apache.org/licenses/LICENSE-2.0>.
 
+On macOS and iPadOS, Apple Speech transcription calls the system's Speech framework
+through the [objc2-speech](https://crates.io/crates/objc2-speech) crate (Zlib OR
+Apache-2.0 OR MIT, from the [objc2](https://github.com/madsmtm/objc2) project), compiled in
+from crates.io and used unmodified, with the objc2 crates the window code already uses.
+The Linux builds don't include it.
+
 AC-3, DTS and video files are converted at import by [FFmpeg](https://ffmpeg.org), an
 optional program you install separately (LGPL or GPL, depending on the build). It isn't
 part of LeadStinger: the app runs it as a separate process when it finds one, and no
 FFmpeg code is compiled in or shipped with the app. The Nix package only puts nixpkgs'
 `ffmpeg-headless` on its PATH.
+
+Transcription runs [whisper.cpp](https://github.com/ggml-org/whisper.cpp)'s `whisper-cli`
+(MIT), an optional program you install separately with a model file you choose. Like
+FFmpeg it isn't part of LeadStinger: the app runs it as a separate process when it finds
+one, and no whisper.cpp code or model is compiled in, shipped or downloaded. Its JSON
+output is read by code written for LeadStinger.
 
 QuipClipper clips are downloaded with [ureq](https://github.com/algesten/ureq) (MIT or
 Apache-2.0) over [rustls](https://github.com/rustls/rustls) (Apache-2.0, ISC or MIT),

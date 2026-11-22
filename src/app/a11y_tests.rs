@@ -244,7 +244,10 @@ fn walk(theme: ThemeKind) -> BTreeSet<String> {
     b.run("transport.stopAll", json!({"immediate": true}));
     b.run("view.search", json!({"query": "a"}));
     look(&b, "search");
-    b.run("view.search", json!({"close": true}));
+    // With the keyboard in the box, its list of hits shows.
+    b.run("view.search", json!({}));
+    look(&b, "search list");
+    b.run("view.search", json!({"clear": true}));
     // An installed theme, so View ▸ Theme lists one (D-119).
     let harbor = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/themes/harbor.lstheme");
     b.run("theme.import", json!({"path": harbor, "use": false}));
@@ -2495,5 +2498,132 @@ fn a_focused_pad_has_one_mark_in_each_look() {
             assert_eq!(ctx.memory(|m| m.focused()), Some(id), "the set has the focus");
             assert_eq!(ring(), None, "a focused set draws its own outline");
         }
+    }
+}
+
+/// The search box from the keyboard (D-265): typing never plays, Down chooses the next
+/// hit, Enter goes to it (selected, its pad focused, the box empty), and Esc empties the
+/// box and gives the keyboard back to the board. The board isn't rearranged meanwhile.
+#[test]
+fn the_search_box_works_from_the_keyboard() {
+    for theme in [ThemeKind::Console, ThemeKind::Panel] {
+        let mut b = Board::new(theme);
+        let lender = b.harness.state().lender.clone();
+        let order = lender.with(|c| c.current_set().tiles.iter().map(|t| t.id).collect::<Vec<_>>());
+        b.run("view.search", json!({}));
+        assert!(b.harness.ctx.egui_wants_keyboard_input(), "{theme:?}: ⌘F puts the keyboard in the box");
+        b.harness.event(egui::Event::Text("a".into()));
+        b.harness.run_steps(3);
+        assert_eq!(lender.with(|c| c.search.clone()).as_deref(), Some("a"), "{theme:?}: typing sets the query");
+        assert!(lender.with(|c| c.statuses.is_empty()), "{theme:?}: nothing plays while typing");
+        assert_eq!(lender.with(|c| c.current_set().tiles.iter().map(|t| t.id).collect::<Vec<_>>()), order, "the board keeps its order");
+        assert!(b.harness.get_all_by_label("Search results").next().is_some(), "{theme:?}: the list shows");
+        let hits = lender.with(|c| c.search_hits("a"));
+        assert!(hits.len() >= 2);
+        b.press(Key::ArrowDown);
+        assert_eq!(b.harness.state().search_pick, 1, "{theme:?}: Down chooses the second hit");
+        b.press(Key::Enter);
+        b.harness.run_steps(3);
+        assert_eq!(lender.with(|c| (c.selected_tile, c.search.clone())), (Some(hits[1]), None), "{theme:?}: Enter goes to it and empties the box");
+        assert_eq!(b.harness.state().focused_tile, Some(hits[1]), "{theme:?}: its pad has the keyboard, so Enter plays it");
+        assert!(lender.with(|c| c.statuses.is_empty()), "{theme:?}: going to it doesn't play it");
+        // Esc: empty, and the keyboard back on the board.
+        b.run("view.search", json!({}));
+        b.harness.event(egui::Event::Text("zz".into()));
+        b.harness.run_steps(3);
+        b.press(Key::Escape);
+        b.harness.run_steps(3);
+        assert_eq!(lender.with(|c| c.search.clone()), None, "{theme:?}: Esc empties the box");
+        assert!(!b.harness.ctx.memory(|m| m.has_focus(super::search_box::box_id())), "{theme:?}: and leaves it");
+        assert_eq!(b.harness.state().focused_tile, Some(hits[1]), "{theme:?}: the keyboard is back on the selected pad");
+        assert!(lender.with(|c| c.statuses.is_empty()), "{theme:?}: Esc in the box isn't Stop All's Esc either way, and plays nothing");
+    }
+}
+
+/// D-274: a click on a subtitle word in the editor gives it the arrow keys at once:
+/// Left/Right nudge its start, Up/Down choose its start, the whole word or its end, and
+/// Shift makes the step coarse. No pad plays and the board's selection stays put. The
+/// grip toggle and the tools are icon buttons with names (D-276).
+#[test]
+fn a_clicked_subtitle_word_takes_the_arrow_keys() {
+    for theme in [ThemeKind::Console, ThemeKind::Panel] {
+        let mut b = Board::new(theme);
+        b.run("tile.subtitlesSet", json!({"tile": "#1", "cues": [{"start": 0.1, "end": 1.0, "text": "one two"}]}));
+        b.run("view.inspector", json!({"open": false}));
+        b.run("view.editor", json!({"tile": "#1"}));
+        b.run("view.editorZoom", json!({"from": 0.0, "to": 1.5}));
+        let lender = b.harness.state().lender.clone();
+        let words = |l: &Arc<Lender>| l.with(|c| crate::align::words_of(&c.store.library.tile(c.editor.unwrap()).unwrap().subtitles[0]));
+        let selected_tiles = lender.with(|c| c.selected_tile);
+        let start = words(&lender)[0].clone();
+
+        b.harness.get_all_by_label_contains("Subtitle word “one”").next().expect("the word").click();
+        b.harness.run_steps(3);
+        assert!(b.harness.get_all_by_label_contains("Subtitle word “one”").next().unwrap().accesskit_node().is_focused(), "{theme:?}: the click gives it the keyboard");
+        b.press(Key::ArrowRight);
+        let w = words(&lender);
+        assert!((w[0].start - (start.start + 0.01)).abs() < 1e-9 && w[0].end == start.end, "{theme:?}: Right moves its start 10 ms: {w:?}");
+        b.press(Key::ArrowDown);
+        assert_eq!(lender.with(|c| c.editor_word.map(|w| w.grip)), Some(crate::align::Grip::Word), "{theme:?}: Down: the whole word");
+        b.press(Key::ArrowLeft);
+        let v = words(&lender);
+        assert!((v[0].start - w[0].start + 0.01).abs() < 1e-9 && (v[0].end - w[0].end + 0.01).abs() < 1e-9, "{theme:?}: Left moves the whole word: {v:?}");
+        b.press(Key::ArrowDown);
+        b.press_all(Key::ArrowRight, Modifiers::SHIFT);
+        let x = words(&lender);
+        assert!((x[0].end - v[0].end - 0.1).abs() < 1e-9 && x[0].start == v[0].start, "{theme:?}: Shift+Right moves its end 100 ms: {x:?}");
+        assert!(lender.with(|c| c.statuses.is_empty()), "{theme:?}: no pad played");
+        assert_eq!(lender.with(|c| c.selected_tile), selected_tiles, "{theme:?}: the board's selection stays");
+        for name in ["Arrows move the word's start", "Arrows move the whole word", "Arrows move the word's end", "Start at Playhead", "Join Next", "Reset Line", "Split Again"] {
+            assert!(b.harness.query_by_label(name).is_some(), "{theme:?}: {name}");
+        }
+        b.click("Arrows move the word's start");
+        assert_eq!(lender.with(|c| c.editor_word.map(|w| w.grip)), Some(crate::align::Grip::Start), "{theme:?}: the toggle picks the grip");
+    }
+}
+
+/// D-302: a click on a subtitle line's bar gives the line the keyboard: Left/Right move
+/// the whole line, Delete removes it (one undo step). A new line is typed into the
+/// "New subtitle line" field and placed over the editor's selection by Add Line, which
+/// has a name and is greyed until there's text. Delete Line is an icon button with a name.
+#[test]
+fn a_subtitle_line_is_added_moved_and_deleted_from_the_editor() {
+    for theme in [ThemeKind::Console, ThemeKind::Panel] {
+        let mut b = Board::new(theme);
+        b.run("tile.subtitlesSet", json!({"tile": "#1", "cues": [{"start": 0.1, "end": 0.5, "text": "one two"}, {"start": 0.8, "end": 1.2, "text": "three"}]}));
+        b.run("view.inspector", json!({"open": false}));
+        b.run("view.editor", json!({"tile": "#1"}));
+        b.run("view.editorZoom", json!({"from": 0.0, "to": 1.5}));
+        let lender = b.harness.state().lender.clone();
+        let lines = |l: &Arc<Lender>| l.with(|c| c.store.library.tile(c.editor.unwrap()).unwrap().subtitles.clone());
+
+        b.harness.get_all_by_label_contains("Subtitle line 2 “three”").next().expect("the bar").click();
+        b.harness.run_steps(3);
+        assert!(b.harness.get_all_by_label_contains("Subtitle line 2 “three”").next().unwrap().accesskit_node().is_focused(), "{theme:?}: the click gives the line the keyboard");
+        b.press(Key::ArrowRight);
+        let l = lines(&lender);
+        assert!((l[1].start - 0.81).abs() < 1e-9, "{theme:?}: Right moves the whole line 10 ms: {:?}", l[1]);
+        b.press(Key::Delete);
+        assert_eq!(lines(&lender).len(), 1, "{theme:?}: Delete removes the line");
+        assert!(lender.with(|c| c.statuses.is_empty()), "{theme:?}: no pad played");
+        b.run("edit.undo", json!({}));
+        assert_eq!(lines(&lender).len(), 2, "{theme:?}: one undo step puts it back");
+
+        b.run("view.editorWord", json!({"line": 1, "word": 1}));
+        b.harness.run_steps(3);
+        assert!(b.harness.query_by_label("Delete Line").is_some(), "{theme:?}: Delete Line");
+        assert!(b.harness.get_by_label("Add Line").accesskit_node().is_disabled(), "{theme:?}: Add Line waits for text");
+        b.run("view.editorSelect", json!({"from": 0.55, "to": 0.75}));
+        b.harness.get_by_label("New subtitle line").click();
+        b.harness.run_steps(2);
+        b.harness.event(egui::Event::Text("hey".into()));
+        b.harness.run_steps(3);
+        b.press(Key::Enter);
+        b.harness.run_steps(3);
+        let l = lines(&lender);
+        assert_eq!(l.len(), 3, "{theme:?}: Enter adds the line: {l:?}");
+        assert_eq!((l[1].text.as_str(), l[1].added), ("hey", true), "{theme:?}: marked added");
+        assert!(l[1].start >= 0.55 && l[1].end <= 0.75 + 1e-9, "{theme:?}: over the selection, its word on the sound in it: {:?}", l[1]);
+        assert_eq!(lender.with(|c| c.editor_word.map(|w| w.line)), Some(1), "{theme:?}: the new line is selected");
     }
 }

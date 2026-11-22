@@ -185,7 +185,8 @@ fn commands_reach_the_running_app() {
     assert_eq!(lender.with(|c| c.notice.as_ref().map(|n| n.text.clone())).as_deref(), Some("Random: playing Rimshot"));
     assert_eq!(cli(&data, &["stop-all", "--immediate"]).code, 0);
 
-    // A script: one result line per step, stopping at the first failure.
+    // A script: one result line per step, stopping at the first failure. Its changes to
+    // sets and tiles are put back (one batch, atomic); a setting such as the theme isn't.
     let script = root.join("show.jsonl");
     std::fs::write(
         &script,
@@ -202,7 +203,7 @@ fn commands_reach_the_running_app() {
     let r = cli(&data, &["run", script.to_str().unwrap()]);
     assert_eq!(r.code, 1);
     assert_eq!(r.json["error"]["code"], "script_failed");
-    assert_eq!(lender.with(|c| c.store.library.sets.len()), 2, "stopped before the last step");
+    assert_eq!(lender.with(|c| c.store.library.sets.len()), 1, "Game Night was put back, never never ran");
     assert_eq!(lender.with(|c| c.store.library.theme), leadstinger::model::ThemeKind::Panel);
     std::fs::remove_dir_all(root).ok();
 }
@@ -302,4 +303,263 @@ fn check_for_updates_reads_the_latest_release() {
     let bad = run("nightly");
     assert_eq!(bad.status.code(), Some(1));
     std::fs::remove_dir_all(dir).ok();
+}
+
+/// The socket holds a connection to the policy it asked for: `--safe` is refused in the
+/// app too, a connection can't widen its policy again, and others stay unrestricted. A
+/// `run` script reaches the app as one batch, so it undoes in one step.
+#[test]
+fn the_socket_keeps_a_connections_policy() {
+    let root = temp("policy");
+    let data = root.join("data");
+    let lender = Lender::new(Controller::new(Store::open(data.clone()).unwrap(), Engine::disabled("test")));
+    let _lock = control::lock_library(&data, Duration::ZERO).unwrap();
+    let _server = control::serve(lender.clone(), &data, None).unwrap();
+
+    let mut c = control::Client::connect(&data).unwrap();
+    c.call("set.create", json!({"name": "Doomed"})).unwrap();
+    assert_eq!(c.call("policy", json!({"safe": true})).unwrap()["safe"], true);
+    assert_eq!(c.call("set.delete", json!({"set": "Doomed"})).unwrap_err().code, "refused");
+    assert_eq!(c.call("policy", json!({"safe": false})).unwrap()["safe"], true, "it can't widen itself");
+    let batch = json!({"steps": [{"command": "set.delete", "params": {"set": "Doomed"}}]});
+    assert_eq!(c.call("batch.run", batch.clone()).unwrap_err().code, "refused");
+    // Another connection is the user's own.
+    let mut other = control::Client::connect(&data).unwrap();
+    assert_eq!(other.call("batch.run", batch).unwrap()["ok"], true);
+
+    // The CLI's --safe asks for the policy before it sends anything.
+    let r = cli(&data, &["--safe", "set.delete", "#1"]);
+    assert_eq!(r.code, 5, "{} {}", r.json, r.stderr);
+
+    let script = root.join("script.jsonl");
+    std::fs::write(&script, "{\"command\": \"set.create\", \"params\": {\"name\": \"One\"}}\n{\"command\": \"set.create\", \"params\": {\"name\": \"Two\"}}\n").unwrap();
+    let r = cli(&data, &["run", script.to_str().unwrap()]);
+    assert_eq!(r.code, 0, "{} {}", r.json, r.stderr);
+    let undone = cli(&data, &["edit.undo"]);
+    assert_eq!(undone.json["undid"], "Script", "{} {}", undone.json, undone.stderr);
+    let names: Vec<String> = lender.with(|c| c.store.library.sets.iter().map(|s| s.name.clone()).collect());
+    assert!(!names.contains(&"One".to_owned()) && !names.contains(&"Two".to_owned()), "{names:?}");
+
+    // A failing script keeps nothing unless --keep-going.
+    std::fs::write(&script, "{\"command\": \"set.create\", \"params\": {\"name\": \"Three\"}}\n{\"command\": \"set.rename\", \"params\": {\"set\": \"Nope\", \"name\": \"x\"}}\n").unwrap();
+    let r = cli(&data, &["run", script.to_str().unwrap()]);
+    assert_eq!(r.code, 1, "{} {}", r.json, r.stderr);
+    assert!(r.stderr.contains("put back"), "{}", r.stderr);
+    assert!(!lender.with(|c| c.store.library.sets.iter().any(|s| s.name == "Three")));
+    let r = cli(&data, &["--keep-going", "run", script.to_str().unwrap()]);
+    assert_eq!(r.code, 1);
+    assert!(lender.with(|c| c.store.library.sets.iter().any(|s| s.name == "Three")));
+}
+
+/// `run --dry-run` reports what a script would change, and changes nothing (offline too).
+#[test]
+fn a_dry_run_script_changes_nothing() {
+    let root = temp("dry");
+    let data = root.join("data");
+    let script = root.join("s.jsonl");
+    std::fs::write(&script, "{\"command\": \"set.create\", \"params\": {\"name\": \"Rehearsal\"}}\n").unwrap();
+    let r = cli(&data, &["run", "--dry-run", script.to_str().unwrap()]);
+    assert_eq!(r.code, 0, "{} {}", r.json, r.stderr);
+    assert_eq!(r.json["dryRun"], true);
+    assert_eq!(r.json["changes"]["sets"]["added"][0]["name"], "Rehearsal");
+    let sets = cli(&data, &["set.list"]).json;
+    assert!(sets.as_array().unwrap().iter().all(|s| s["name"] != "Rehearsal"), "{sets}");
+}
+
+/// `connect` speaks the socket protocol on stdin/stdout: `lines` in, one reply each out.
+fn connect(data: &Path, args: &[&str], env: &[(&str, &str)], lines: &[Value]) -> Vec<Value> {
+    use std::io::Write;
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_leadstinger-cli"));
+    cmd.arg("--data-dir").arg(data).args(args).env_remove("LEADSTINGER_DATA_DIR");
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let mut child = cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    for l in lines {
+        writeln!(stdin, "{l}").unwrap();
+    }
+    drop(stdin);
+    let out = child.wait_with_output().unwrap();
+    String::from_utf8_lossy(&out.stdout).lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+}
+
+/// `connect` reaches the running app (with `--safe` set on the connection first, so it
+/// can't be widened), or the library when the app is closed; `--ssh connect` is safe.
+#[test]
+fn connect_reaches_the_app_or_the_library() {
+    let root = temp("connect");
+    let data = root.join("data");
+    let req = |id: u64, command: &str, params: Value| json!({"id": id, "command": command, "params": params});
+
+    // Offline: the library, locked here; what needs the app answers not_running.
+    let r = connect(&data, &["connect"], &[], &[
+        req(1, "hello", json!({})),
+        req(2, "set.create", json!({"name": "Kept"})),
+        req(3, "tile.play", json!({"tile": "x"})),
+        req(4, "batch.run", json!({"steps": [{"command": "transport.stopAll"}]})),
+        req(5, "events.subscribe", json!({})),
+    ]);
+    assert_eq!(r[0]["result"]["offline"], true, "{r:?}");
+    assert_eq!(r[1]["ok"], true, "{r:?}");
+    for (i, reply) in r.iter().enumerate().skip(2) {
+        assert_eq!(reply["error"]["code"], "not_running", "{i}: {reply}");
+    }
+    assert!(cli(&data, &["set.list"]).json.as_array().unwrap().iter().any(|s| s["name"] == "Kept"), "saved");
+
+    // The app: --safe is the connection's policy, and a policy message can't widen it.
+    let lender = Lender::new(Controller::new(Store::open(data.clone()).unwrap(), Engine::disabled("test")));
+    let _lock = control::lock_library(&data, Duration::ZERO).unwrap();
+    let _server = control::serve(lender.clone(), &data, None).unwrap();
+    let r = connect(&data, &["--safe", "connect"], &[], &[
+        req(1, "hello", json!({})),
+        req(2, "policy", json!({"safe": false})),
+        req(3, "set.delete", json!({"set": "Kept"})),
+        req(4, "set.create", json!({"name": "Live"})),
+    ]);
+    assert_eq!(r[0]["result"]["offline"], Value::Null, "the app answers, not the library: {r:?}");
+    assert_eq!(r[1]["result"]["safe"], true, "{r:?}");
+    assert_eq!(r[2]["error"]["code"], "refused", "{r:?}");
+    assert_eq!(r[3]["ok"], true, "{r:?}");
+    assert!(lender.with(|c| c.store.library.sets.iter().any(|s| s.name == "Live")));
+
+    // An SSH key's forced command: connect is allowed, and always safe.
+    let r = connect(&data, &["--ssh"], &[("SSH_ORIGINAL_COMMAND", "connect")], &[req(1, "set.delete", json!({"set": "Kept"}))]);
+    assert_eq!(r[0]["error"]["code"], "refused", "{r:?}");
+    assert!(lender.with(|c| c.store.library.sets.iter().any(|s| s.name == "Kept")));
+    std::fs::remove_dir_all(root).ok();
+}
+
+/// The generated Python client (clients/python) drives the app through `connect`. Skipped
+/// where there's no python3 (the Nix shell has none; macOS and most Linux hosts do).
+#[test]
+fn the_python_client_drives_the_app() {
+    if Command::new("python3").arg("--version").output().is_err() {
+        eprintln!("no python3: the Python client test is skipped");
+        return;
+    }
+    let root = temp("python");
+    let data = root.join("data");
+    let files = tones(&root, &["Rimshot"]);
+    let lender = Lender::new(Controller::new(Store::open(data.clone()).unwrap(), Engine::disabled("test")));
+    let _lock = control::lock_library(&data, Duration::ZERO).unwrap();
+    let _server = control::serve(lender.clone(), &data, None).unwrap();
+    let script = r#"
+import json, sys, leadstinger
+data, wav = sys.argv[1], sys.argv[2]
+out = {}
+with leadstinger.connect(data_dir=data) as ls:
+    out["offline"] = ls.hello().get("offline")
+    ls.tile.add([wav])
+    out["tiles"] = [t["title"] for t in ls.tile.list()]
+    with ls.batch() as b:
+        b.set.create("Show")
+        b.tile.set("Rimshot", title="Rim")
+    out["undo"] = b.result["undo"]
+    try:
+        ls.tile.get("nope")
+    except leadstinger.Error as e:
+        out["error"] = e.code
+    try:
+        with ls.batch() as b:
+            b.set.create("Half")
+            b.set.rename("x", set="Nope")
+    except leadstinger.Error as e:
+        out["batch_error"] = [e.code, e.result["rolledBack"]]
+with leadstinger.connect(data_dir=data, safe=True) as ls:
+    try:
+        ls.set.delete("Show")
+    except leadstinger.Error as e:
+        out["safe"] = e.code
+print(json.dumps(out))
+"#;
+    let out = Command::new("python3")
+        .args(["-c", script, data.to_str().unwrap(), &files[0]])
+        .env("PYTHONPATH", Path::new(env!("CARGO_MANIFEST_DIR")).join("clients/python"))
+        .env("LEADSTINGER_CLI", env!("CARGO_BIN_EXE_leadstinger-cli"))
+        .env_remove("LEADSTINGER_DATA_DIR")
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let r: Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| panic!("{e}: {stdout} {}", String::from_utf8_lossy(&out.stderr)));
+    assert_eq!(r["offline"], Value::Null, "{r}");
+    assert_eq!(r["tiles"], json!(["Rimshot"]), "{r}");
+    assert_eq!(r["undo"], "Script", "{r}");
+    assert_eq!(r["error"], "not_found", "{r}");
+    assert_eq!(r["batch_error"], json!(["not_found", true]), "{r}");
+    assert_eq!(r["safe"], "refused", "{r}");
+    let names: Vec<String> = lender.with(|c| c.store.library.sets.iter().map(|s| s.name.clone()).collect());
+    assert!(names.contains(&"Show".to_owned()) && !names.contains(&"Half".to_owned()), "{names:?}");
+    assert!(lender.with(|c| c.store.library.sets.iter().flat_map(|s| &s.tiles).any(|t| t.title == "Rim")));
+    std::fs::remove_dir_all(root).ok();
+}
+
+/// `mcp` is an MCP server on stdio: the handshake, four tools, each call reaching the
+/// library (offline, locked only for the call) or the app, destructive commands refused.
+#[test]
+fn mcp_serves_the_registry() {
+    let root = temp("mcp");
+    let data = root.join("data");
+    let rpc = |id: u64, method: &str, params: Value| json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+    let tool = |id: u64, name: &str, args: Value| rpc(id, "tools/call", json!({"name": name, "arguments": args}));
+    let session = |args: &[&str], calls: Vec<Value>| {
+        let mut lines = vec![
+            rpc(0, "initialize", json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}})),
+            json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+        ];
+        lines.extend(calls);
+        connect(&data, args, &[], &lines)
+    };
+
+    // Offline: the library, one call at a time.
+    let r = session(&["mcp"], vec![
+        rpc(1, "tools/list", json!({})),
+        tool(2, "run", json!({"command": "set.create", "params": {"name": "Show"}})),
+        tool(3, "query", json!({"command": "set.list"})),
+        tool(4, "run", json!({"command": "set.delete", "params": {"set": "Show"}})),
+        tool(5, "run", json!({"command": "tile.play", "params": {"tile": "x"}})),
+        tool(6, "screenshot", json!({})),
+    ]);
+    assert_eq!(r.len(), 7, "one reply per request, nothing else on stdout: {r:?}");
+    assert_eq!(r[0]["result"]["serverInfo"]["name"], "leadstinger", "{r:?}");
+    let tools: Vec<&str> = r[1]["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
+    assert_eq!(tools, ["commands", "query", "run", "screenshot"]);
+    assert_eq!(r[2]["result"]["isError"], Value::Null, "{}", r[2]);
+    assert!(r[3]["result"]["structuredContent"]["result"].as_array().unwrap().iter().any(|s| s["name"] == "Show"), "{}", r[3]);
+    for (i, code) in [(4, "refused"), (5, "not_running"), (6, "not_running")] {
+        assert_eq!(r[i]["result"]["isError"], true, "{}", r[i]);
+        assert!(r[i]["result"]["content"][0]["text"].as_str().unwrap().contains(code), "{i}: {}", r[i]);
+    }
+    // The library isn't held between calls: the one-shot CLI gets it straight away.
+    assert_eq!(cli(&data, &["set.list"]).code, 0);
+
+    // The app (headless, as `serve` runs it): --safe holds, and a batch is one undo step;
+    // screenshots need a window.
+    let mut ctl = Controller::new(Store::open(data.clone()).unwrap(), Engine::disabled("test"));
+    ctl.has_window = false;
+    let lender = Lender::new(ctl);
+    let _lock = control::lock_library(&data, Duration::ZERO).unwrap();
+    let _server = control::serve(lender.clone(), &data, None).unwrap();
+    let r = session(&["--safe", "mcp"], vec![
+        tool(1, "run", json!({"steps": [{"command": "set.create", "params": {"name": "A"}}, {"command": "set.create", "params": {"name": "B"}}]})),
+        tool(2, "run", json!({"command": "tile.add", "params": {"paths": ["/etc/hosts"]}})),
+        tool(3, "screenshot", json!({})),
+        tool(4, "commands", json!({"id": "tile.trigger"})),
+    ]);
+    assert_eq!(r[1]["result"]["structuredContent"]["undo"], "Script", "{}", r[1]);
+    assert!(r[2]["result"]["content"][0]["text"].as_str().unwrap().contains("refused"), "{}", r[2]);
+    assert!(r[3]["result"]["content"][0]["text"].as_str().unwrap().contains("no_window"), "{}", r[3]);
+    assert_eq!(r[4]["result"]["structuredContent"]["inputSchema"]["required"], json!(["tile"]), "{}", r[4]);
+    assert!(lender.with(|c| c.store.library.sets.iter().any(|s| s.name == "B")));
+
+    // Over an SSH forced command it may run, but never with --allow-destructive.
+    let r = connect(&data, &["--ssh"], &[("SSH_ORIGINAL_COMMAND", "mcp --allow-destructive")], &[]);
+    assert!(r.is_empty() || r[0]["error"]["code"] == "refused", "{r:?}");
+    let refused = Command::new(env!("CARGO_BIN_EXE_leadstinger-cli"))
+        .args(["--data-dir", data.to_str().unwrap(), "--ssh"])
+        .env("SSH_ORIGINAL_COMMAND", "mcp --allow-destructive")
+        .output()
+        .unwrap();
+    assert_eq!(refused.status.code(), Some(5));
+    std::fs::remove_dir_all(root).ok();
 }
